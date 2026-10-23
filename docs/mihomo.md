@@ -45,7 +45,7 @@ proxy-providers:
       Authorization:
         - "Bearer 面板设备TOKEN"
       CF-Access-Client-Id:
-        - "本设备的CF服务令牌ID.access"
+        - "本设备的CF服务令牌Client ID原值"
       CF-Access-Client-Secret:
         - "本设备的CF服务令牌SECRET"
     health-check:

@@ -34,7 +34,7 @@ npm start
 
 ## 1Panel / Docker 部署
 
-**域名、Cloudflare DNS / 代理、1Panel HTTPS 证书已经配置好：直接按 [1Panel 逐步部署教程](docs/1panel.md) 操作。教程从 GitHub 拉取代码开始，到浏览器打开登录页结束，无需手动上传项目，无需 Cloudflare Tunnel。**
+**域名、Cloudflare DNS / 代理、1Panel HTTPS 证书已经配置好：直接按 [1Panel + Cloudflare Access 完整部署教程](docs/1panel.md) 操作。包含三个域名的反向代理、后台身份登录、订阅 / Agent 独立服务令牌、源站校验和验收，从 GitHub 拉取到打开登录页，无需手动上传项目或 Cloudflare Tunnel。**
 
 在 1Panel 的服务器终端拉取：
 
@@ -46,9 +46,9 @@ cd /opt/xray-panel
 
 创建 `.env` 后，在「容器 → 编排 → 创建 → 路径选择」使用 `/opt/xray-panel/deploy/1panel/docker-compose.yml`。该文件使用绝对路径，适用于 1Panel 导入；项目根目录的 `compose.yaml` 适用于在项目目录直接执行 Compose。
 
-随后把现有 HTTPS 网站的根路径反向代理到 `http://127.0.0.1:3000`，`.env` 中的 `PANEL_ADMIN_ORIGIN` 必须是浏览器实际使用的 HTTPS 域名，不带尾部 `/`。Cloudflare 现有 DNS 和 1Panel 证书不需要重配。
+三个 HTTPS 网站分别反向代理到本机 3000 / 3001 / 3002，`.env` 中三个 `ORIGIN` 填对应 HTTPS 域名，不带尾部 `/`。保留已配好的管理域名和证书，为订阅和 Agent 补齐各自站点与证书。
 
-如果希望使用 Cloudflare Tunnel + Access 的另一种接入方式，可单独参考 docs/cloudflare.md；它不是现有 HTTPS 网站反向代理方案的必需步骤。
+三个域名都开启橙云，各自创建 Access 应用：后台用 Allow 限定管理员身份，订阅和 Agent 用 Service Auth 分别限定设备 / VPS 令牌。源站还需要按教程限制绕过 Cloudflare 的直连访问；凭据字段与机器接入参考 [Cloudflare 认证说明](docs/cloudflare.md)。
 
 三个独立入口：
 
