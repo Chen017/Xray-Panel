@@ -215,6 +215,8 @@ openssl rand -hex 32
 
 先确认三个 Access 应用和源站请求头规则已启用。在 1Panel 中分别打开管理、订阅、Agent 对应的网站：
 
+订阅 / Agent 站点尚未创建时，在「网站 → 创建网站」选择 **反向代理**，各建一个独立站点：主域名分别填 `sub.yourdomain.com`、`agent.yourdomain.com`；代理地址分别填 `http://127.0.0.1:3001`、`http://127.0.0.1:3002`；启用 HTTPS 并选择第 0 步准备的对应证书。完成后按下面步骤检查根代理和添加源站校验。已有站点直接编辑，不重复创建，不选 Node.js 运行环境，也不将两个名称作为管理站的附加域名。
+
 1. 进入「网站 → 对应网站 → 配置」。
 2. 找到「反向代理」。
 3. 新建或编辑该网站的根路径代理，填写：
@@ -413,7 +415,7 @@ https://panel.yourdomain.com
 
 ## 参考与验证范围
 
-已核对 [1Panel 编排](https://1panel.pro/docs/v2/user_manual/containers/composes/)、[1Panel 网站配置](https://1panel.pro/docs/v2/user_manual/websites/website_config_basic/)、[Cloudflare Full (strict)](https://developers.cloudflare.com/ssl/origin-configuration/ssl-modes/full-strict/)。
+已核对 [1Panel 编排](https://1panel.pro/docs/v2/user_manual/containers/composes/)、[创建反向代理网站](https://1panel.pro/docs/v2/user_manual/websites/website_create/)、[1Panel 网站配置](https://1panel.pro/docs/v2/user_manual/websites/website_config_basic/)、[Cloudflare Full (strict)](https://developers.cloudflare.com/ssl/origin-configuration/ssl-modes/full-strict/)。
 
 Access 菜单和凭据以 [Self-hosted 应用](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/)、[One-time PIN](https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/one-time-pin/)、[Service Tokens](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/) 为准。源站校验组合参考 [请求头转换规则](https://developers.cloudflare.com/rules/transform/request-header-modification/create-dashboard/) 和 [NGINX if / return](https://nginx.org/en/docs/http/ngx_http_rewrite_module.html#if)；机器人验证限制见 [Bot Fight Mode](https://developers.cloudflare.com/bots/get-started/bot-fight-mode/)。核对日期：2026-10-23。
 
