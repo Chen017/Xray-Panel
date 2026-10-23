@@ -9,16 +9,19 @@ import { z } from 'zod';
 import * as age from 'age-encryption';
 import YAML from 'yaml';
 import { Store,token,digest,passwordHash,passwordVerify } from './store.mjs';
+import {addressPolicy,effectiveAddress,observeAddresses,resolveLinkedAddresses,linkedTargetHash} from '../shared/addresses.mjs';
 import { validateBundle,hashBundle,compileDevices,providerProxies,providerLinks,readSettings,patchSettings,patchRouting,keypair,hostSchema,newBundle,settingsSchema,clone } from '../shared/config.mjs';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+const version=JSON.parse(readFileSync(path.join(root,'package.json'),'utf8')).version;
 const now=()=>new Date().toISOString();
 const error=(message,status=400)=>Object.assign(Error(message),{status});
 const idSchema=z.string().uuid();
-const nodeSchema=z.object({name:z.string().trim().min(1).max(80),ipv4:z.union([hostSchema,z.literal('')]).default(''),ipv6:z.union([hostSchema,z.literal('')]).default(''),enabled:z.boolean().default(true)});
+const addressSchema=z.object({mode:z.enum(['auto','manual']),value:z.union([hostSchema,z.literal('')]).default('')});
+const nodeSchema=z.object({name:z.string().trim().min(1).max(80),ipv4:z.union([hostSchema,z.literal('')]).default(''),ipv6:z.union([hostSchema,z.literal('')]).default(''),enabled:z.boolean().default(true),addressPolicy:z.object({ipv4:addressSchema,ipv6:addressSchema}).optional()});
 const grantSchema=z.object({nodeId:idSchema,routes:z.array(z.string().regex(/^(direct|\d{1,6})$/)).min(1).max(33),modes:z.array(z.enum(['split','single4','single6','vision4','vision6'])).min(1).max(5)});
 const deviceSchema=z.object({name:z.string().trim().min(1).max(80),publicKey:z.string().regex(/^age1[023456789acdefghjklmnpqrstuvwxyz]{58}$/),grants:z.array(grantSchema).max(100)});
-const actionSchema=z.enum(['inspect','validate','dump','logs','start','stop','restart','enable','disable','update-core','update-script','update-geodata','maintenance','bbr','diagnostics','relay-test','relay-keygen','uninstall','install-standard','install-landing']);
+const actionSchema=z.enum(['inspect','detect-addresses','firewall-status','validate','dump','logs','start','stop','restart','enable','disable','update-core','update-script','update-geodata','maintenance','bbr','diagnostics','relay-test','relay-keygen','uninstall','install-standard','install-landing']);
 export const MAX_BACKUP_BYTES=64*1024*1024;
 const MAX_BACKUP_RECORDS=100000;
 
@@ -31,7 +34,7 @@ export function createSystem(config) {
   const getNode=id=>{const n=store.get('node',id);if(!n)throw error('节点不存在',404);return n;};
   const getDevice=id=>{const d=store.get('device',id);if(!d)throw error('设备不存在',404);return d;};
   const busy=id=>store.list('job').find(j=>j.nodeId===id&&['queued','running'].includes(j.status));
-  const publicNode=n=>{const {agentHash,...safe}=n;let hasDraftChanges=false,settings=null;try{settings=n.draft?readSettings(n.draft):null;hasDraftChanges=!!n.draft&&!!n.applied&&hashBundle(compileDevices(n.draft,n,store.list('device'),config.masterKey))!==hashBundle(n.applied);}catch{hasDraftChanges=true;}return {...safe,settings,hasDraftChanges,online:!!n.lastSeen&&Date.now()-Date.parse(n.lastSeen)<45000};};
+  const publicNode=n=>{const {agentHash,...safe}=n;let hasDraftChanges=false,settings=null;try{settings=n.draft?readSettings(n.draft):null;hasDraftChanges=!!n.draft&&!!n.applied&&hashBundle(compileDevices(resolveLinkedAddresses(n.draft,store.list('node')),n,store.list('device'),config.masterKey))!==hashBundle(n.applied);}catch{hasDraftChanges=true;}return {...safe,addressPolicy:addressPolicy(n),settings,hasDraftChanges,online:!!n.lastSeen&&Date.now()-Date.parse(n.lastSeen)<45000};};
   const publicDevice=d=>{const {tokenHash,...safe}=d;return safe;};
   function queue(n,action,payload={},source='admin') {
     if(busy(n.id))throw error('该节点有未完成任务，请等待或取消待执行任务',409);
@@ -41,15 +44,30 @@ export function createSystem(config) {
     if(!n.observedHash)throw error('请先连接 Agent 并同步当前配置',409);
     if(n.report?.configError)throw error('VPS 配置无法读取，请先检查配置错误；仍可读取日志和执行诊断',409);
     if(source==='admin'&&n.draftBaseHash&&n.draftBaseHash!==n.observedHash)throw error('VPS 配置已在面板之外变化，请先导入 VPS 当前配置',409);
-    const bundle=compileDevices(base,n,store.list('device'),config.masterKey);
-    return queue(n,'deploy',{bundle,expectedHash:n.observedHash,targetHash:hashBundle(bundle),syncRevision:n.syncRevision??0},source);
+    const bundle=compileDevices(resolveLinkedAddresses(base,store.list('node')),n,store.list('device'),config.masterKey);
+    return queue(n,'deploy',{bundle,expectedHash:n.observedHash,targetHash:hashBundle(bundle),syncRevision:n.syncRevision??0,relayRevision:n.relayRevision??0},source);
   }
   function markSync(nodeIds){for(const id of new Set(nodeIds)){const n=store.get('node',id);if(n){n.needsSync=true;n.syncRevision=(n.syncRevision??0)+1;delete n.syncRetryAt;delete n.syncFailures;store.put('node',id,n);}}}
-  function retrySync(n){if(n.needsSync){n.syncFailures=(n.syncFailures??0)+1;n.syncRetryAt=Date.now()+Math.min(300000,5000*2**Math.min(n.syncFailures-1,6));}}
+  function retrySync(n){if(n.needsSync||n.needsRelaySync){n.syncFailures=(n.syncFailures??0)+1;n.syncRetryAt=Date.now()+Math.min(300000,5000*2**Math.min(n.syncFailures-1,6));}}
+  function refreshLinks(){
+    const nodes=store.list('node');
+    for(const n of nodes){
+      if(!n.observed?.files['relay.json']?.landings?.some(l=>l.nodeId))continue;
+      try{
+        const target=linkedTargetHash(n,nodes),changed=target!==n.relayTargetHash;
+        if(changed){n.relayRevision=(n.relayRevision??0)+1;n.relayTargetHash=target;n.syncRetryAt=0;}
+        // Recompute even if the desired destination returned to its previous value
+        // while an older job was running. A stale acknowledgement cannot clear it.
+        n.needsRelaySync=target!==n.observedHash;
+        delete n.relaySyncError;
+      }catch(e){n.relaySyncError=e.message;}
+      store.put('node',n.id,n);
+    }
+  }
   const baseApp=(largeRestore=false)=>{const app=express();app.disable('x-powered-by');app.set('trust proxy',false);app.use(helmet({contentSecurityPolicy:{directives:{defaultSrc:["'self'"],scriptSrc:["'self'"],styleSrc:["'self'","'unsafe-inline'"],imgSrc:["'self'","data:"],connectSrc:["'self'"],fontSrc:["'self'","data:"],objectSrc:["'none'"],frameAncestors:["'none'"]}},strictTransportSecurity:config.secure?undefined:false}));app.use((req,res,next)=>{res.set('Cache-Control','no-store');next();});const parse=express.json({limit:'2mb',strict:true});app.use((req,res,next)=>largeRestore&&req.method==='POST'&&req.path==='/api/restore'?next():parse(req,res,next));return app;};
   const finish=app=>app.use((err,req,res,next)=>{const status=err instanceof z.ZodError?400:err.status??500;res.status(status).json({error:status===500?'内部错误，请查看服务日志':err instanceof z.ZodError?err.issues.map(i=>`${i.path.join('.')}: ${i.message}`).join('；'):err.message});if(status===500)console.error(err.message);});
   const admin=baseApp(true),subscription=baseApp(),agent=baseApp();
-  admin.get('/api/health',(_,res)=>res.json({ok:true,service:'admin'}));subscription.get('/health',(_,res)=>res.json({ok:true,service:'subscription'}));agent.get('/health',(_,res)=>res.json({ok:true,service:'agent'}));
+  admin.get('/api/health',(_,res)=>res.json({ok:true,service:'admin',version}));subscription.get('/health',(_,res)=>res.json({ok:true,service:'subscription',version}));agent.get('/health',(_,res)=>res.json({ok:true,service:'agent',version}));
   function session(req){const cookie=(req.headers.cookie??'').split(';').map(s=>s.trim()).find(s=>s.startsWith('xray_session='))?.slice(13);if(!cookie)return null;const s=store.get('session',digest(cookie));if(!s||s.expires<Date.now())return null;return {...s,hash:digest(cookie)};}
   const origin=(req,res,next)=>{if(req.get('origin')!==config.adminOrigin)return next(error('请求来源不匹配',403));next();};
   admin.post('/api/login',rateLimit({windowMs:15*60*1000,limit:10,standardHeaders:'draft-8',legacyHeaders:false}),origin,(req,res)=>{
@@ -63,8 +81,8 @@ export function createSystem(config) {
   admin.post('/api/logout',(req,res)=>{store.remove('session',req.session.hash);res.clearCookie('xray_session',{path:'/'});res.json({ok:true});});
   admin.post('/api/password',(req,res)=>{const p=z.object({current:z.string().max(256),password:z.string().min(16).max(256)}).parse(req.body);if(!passwordVerify(p.current,store.get('system','admin').hash))throw error('当前密码错误',403);store.tx(()=>{store.put('system','admin',{hash:passwordHash(p.password)});for(const s of store.db.prepare("SELECT id FROM records WHERE kind='session'").all())store.remove('session',s.id);});store.audit('password.changed','admin');res.clearCookie('xray_session',{path:'/'});res.json({ok:true});});
   admin.get('/api/nodes',(_,res)=>res.json(store.list('node').map(publicNode)));
-  admin.post('/api/nodes',(req,res)=>{const value=nodeSchema.parse(req.body),secret=token(),n={id:randomUUID(),...value,agentHash:digest(secret),revision:0,createdAt:now(),needsSync:false};store.put('node',n.id,n);store.audit('node.created',n.id);res.status(201).json({node:publicNode(n),agentToken:secret,agentUrl:config.agentOrigin});});
-  admin.patch('/api/nodes/:id',(req,res)=>{const n=getNode(req.params.id),patch=nodeSchema.partial().parse(req.body);Object.assign(n,patch);store.put('node',n.id,n);store.audit('node.updated',n.id);res.json(publicNode(n));});
+  admin.post('/api/nodes',(req,res)=>{const value=nodeSchema.parse(req.body),secret=token(),n={id:randomUUID(),...value,addressPolicy:value.addressPolicy??Object.fromEntries(['ipv4','ipv6'].map(key=>[key,{mode:value[key]?'manual':'auto',value:value[key]}])),agentHash:digest(secret),revision:0,createdAt:now(),needsSync:false};store.put('node',n.id,n);store.audit('node.created',n.id);res.status(201).json({node:publicNode(n),agentToken:secret,agentUrl:config.agentOrigin});});
+  admin.patch('/api/nodes/:id',(req,res)=>{const n=getNode(req.params.id),patch=nodeSchema.partial().parse(req.body);n.addressPolicy=addressPolicy(n);for(const key of ['ipv4','ipv6'])if(patch[key]!==undefined&&!patch.addressPolicy)n.addressPolicy[key]={mode:'manual',value:patch[key]};Object.assign(n,patch);for(const key of ['ipv4','ipv6'])n[key]=effectiveAddress(n,key);store.put('node',n.id,n);refreshLinks();store.audit('node.updated',n.id);res.json(publicNode(n));});
   admin.delete('/api/nodes/:id',(req,res)=>{const n=getNode(req.params.id);if(busy(n.id))throw error('请先完成或取消节点任务',409);store.remove('node',n.id);for(const d of store.list('device')){d.grants=d.grants.filter(g=>g.nodeId!==n.id);store.put('device',d.id,d);}store.audit('node.deleted',n.id);res.json({ok:true});});
   admin.post('/api/nodes/:id/agent-token',(req,res)=>{const n=getNode(req.params.id),secret=token();n.agentHash=digest(secret);store.put('node',n.id,n);store.audit('agent.rotated',n.id);res.json({agentToken:secret,nodeId:n.id,agentUrl:config.agentOrigin});});
   admin.post('/api/keys',(_,res)=>res.json({...keypair(),uuid:randomUUID(),shortIds:[randomBytes(4).toString('hex'),randomBytes(8).toString('hex')]}));
@@ -77,9 +95,9 @@ export function createSystem(config) {
     if(input.firewall){const r=b.files['relay.json'];if(r?.role==='landing'&&[...input.firewall.open,...input.firewall.closed].includes(r.listen_port))throw error('落地中继端口由互联配置管理，请在互联页调整或移除');b.files['firewall_ports.json']=input.firewall;}
     n.draft=validateBundle(b);n.revision++;store.put('node',n.id,n);store.audit('config.saved',n.id,`revision ${n.revision}`);res.json(publicNode(n));});
   admin.post('/api/nodes/:id/adopt',(req,res)=>{const n=getNode(req.params.id);if(busy(n.id))throw error('任务执行期间不能导入',409);if(!n.observed)throw error('Agent 尚未导入配置');n.draft=clone(n.observed);n.draftBaseHash=n.observedHash;n.revision++;store.put('node',n.id,n);store.audit('config.imported',n.id);res.json(publicNode(n));});
-  admin.get('/api/nodes/:id/preview',(req,res)=>{const n=getNode(req.params.id);if(!n.draft)throw error('请先导入配置');const b=compileDevices(n.draft,n,store.list('device'),config.masterKey);res.json({bundle:b,hash:hashBundle(b),observedHash:n.observedHash,revision:n.revision});});
+  admin.get('/api/nodes/:id/preview',(req,res)=>{const n=getNode(req.params.id);if(!n.draft)throw error('请先导入配置');const b=compileDevices(resolveLinkedAddresses(n.draft,store.list('node')),n,store.list('device'),config.masterKey);res.json({bundle:b,hash:hashBundle(b),observedHash:n.observedHash,revision:n.revision});});
   admin.post('/api/nodes/:id/deploy',(req,res)=>{const n=getNode(req.params.id);if(req.body.revision!==n.revision)throw error('配置版本已变化，请重新预览',409);if(!n.draft)throw error('没有配置草稿');res.status(202).json(deploy(n,n.draft));});
-  admin.post('/api/nodes/:id/actions',(req,res)=>{const n=getNode(req.params.id),action=actionSchema.parse(req.body.action);if(['uninstall','install-standard','install-landing'].includes(action)&&req.body.confirm!==n.name)throw error('请输入节点名称确认此操作');res.status(202).json(queue(n,action));});
+  admin.post('/api/nodes/:id/actions',(req,res)=>{const n=getNode(req.params.id),action=actionSchema.parse(req.body.action);if(['uninstall','install-standard','install-landing'].includes(action)&&req.body.confirm!==n.name)throw error('请输入节点名称确认此操作');if(['detect-addresses','firewall-status'].includes(action)&&!n.report?.network)throw error('请先使用 xray-panel agent update 更新该 VPS 的 Agent',409);res.status(202).json(queue(n,action));});
   admin.post('/api/batch',(req,res)=>{const b=z.object({nodeIds:z.array(idSchema).min(1).max(100),action:z.enum(['deploy','inspect','validate','start','stop','restart','update-geodata'])}).parse(req.body);const results=b.nodeIds.map(id=>{try{const n=getNode(id);return{id,job:b.action==='deploy'?deploy(n,n.draft):queue(n,b.action)};}catch(e){return{id,error:e.message};}});res.json(results);});
   admin.get('/api/jobs',(_,res)=>res.json(store.list('job').sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).slice(0,200).map(({payload,leaseHash,...j})=>j)));
   admin.post('/api/jobs/:id/cancel',(req,res)=>{const j=store.get('job',req.params.id);if(!j||j.status!=='queued')throw error('只能取消尚未领取的任务',409);j.status='cancelled';j.completedAt=now();store.tx(()=>{store.put('job',j.id,j);if(j.action==='deploy'){const n=getNode(j.nodeId);retrySync(n);store.put('node',n.id,n);}});store.audit('job.cancelled',j.nodeId,j.id);res.json({ok:true});});
@@ -112,11 +130,12 @@ export function createSystem(config) {
   });
   subscription.get('/source.tar.gz',(_,res)=>{const p=path.join(root,'dist/source.tar.gz');if(!existsSync(p))throw error('源码归档尚未生成',404);res.download('source.tar.gz','xray-panel-source.tar.gz',{root:path.join(root,'dist')});});
   agent.use('/v1/agent',(req,res,next)=>{const id=req.get('x-node-id'),auth=bearer(req),n=id?store.get('node',id):null;if(!n||!auth||digest(auth)!==n.agentHash)return next(error('Agent 凭据无效',401));req.node=n;next();},rateLimit({windowMs:60000,limit:300,keyGenerator:req=>req.node.id,standardHeaders:'draft-8',legacyHeaders:false}));
+  agent.get('/v1/agent/status',(req,res)=>res.json({ok:true,nodeId:req.node.id,version,agentProtocol:1}));
   agent.post('/v1/agent/poll',(req,res)=>store.tx(()=>{
-    const n=getNode(req.node.id),input=z.object({report:z.record(z.unknown()),bundle:z.any().optional()}).parse(req.body);n.report=input.report;n.lastSeen=now();
+    const n=getNode(req.node.id),input=z.object({report:z.record(z.unknown()),bundle:z.any().optional()}).parse(req.body);n.report=input.report;n.lastSeen=now();observeAddresses(n,input.report.network);
     if(input.bundle){n.observed=validateBundle(input.bundle);n.observedHash=hashBundle(n.observed);if(!n.draft){n.draft=clone(n.observed);n.draftBaseHash=n.observedHash;n.revision++;}}
-    store.put('node',n.id,n);
-    if(n.needsSync&&!busy(n.id)&&n.observed&&input.bundle&&!n.report.configError&&(n.syncRetryAt??0)<=Date.now())deploy(n,n.observed,'device-sync');
+    store.put('node',n.id,n);refreshLinks();Object.assign(n,store.get('node',n.id));
+    if((n.needsSync||n.needsRelaySync)&&!busy(n.id)&&n.observed&&input.bundle&&!n.report.configError&&!n.relaySyncError&&(n.syncRetryAt??0)<=Date.now())deploy(n,n.observed,n.needsSync?'device-sync':'address-sync');
     let job=busy(n.id);
     if(job?.status==='running'&&job.leaseUntil>Date.now())job=null;
     if(job?.action==='deploy'&&job.status==='queued'&&n.report.configError)job=null;
@@ -140,8 +159,8 @@ export function createSystem(config) {
       else if(!ok)retrySync(n);
     }
     if(input.ok&&j.action==='uninstall'){delete n.applied;delete n.observed;delete n.observedHash;delete n.draft;n.revision++;}
-    if(input.report)n.report=input.report;
-    store.put('node',n.id,n);store.put('job',j.id,j);store.audit(`job.${j.status}`,n.id,`${j.action} ${j.id}`);res.json({ok:true});
+    if(input.report){n.report=input.report;observeAddresses(n,input.report.network);}
+    if(ok&&j.action==='deploy'&&(j.payload.relayRevision??0)===(n.relayRevision??0))n.needsRelaySync=false;store.put('node',n.id,n);refreshLinks();store.put('job',j.id,j);store.audit(`job.${j.status}`,n.id,`${j.action} ${j.id}`);res.json({ok:true});
   }));
   finish(admin);finish(subscription);finish(agent);
   return {admin,subscription,agent,store,config,queue,deploy};

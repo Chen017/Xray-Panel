@@ -17,7 +17,7 @@
 - Local snapshot: 38765c9c0e9e217397b7ee6d096386494d834f4f, script v2.7.9.
 - Reused script modules are in vendor/xray-script/ for unattended bootstrap and local integration tests. An already installed VPS uses its own sh/src modules.
 - Configuration compiler adapted from src/node.jq, core.sh relay rebuild and runtime.sh outbound strategies; existing runtime.sh transaction and firewall.sh are directly executed by agent/bridge.sh.
-- Local change in vendor install.sh: PANEL_UNATTENDED=1 skips interactive export prompts and bootstraps standard or no-inbound landing mode. The original script workspace has not been modified.
+- Local change in vendor install.sh: PANEL_UNATTENDED=1 skips interactive export prompts and bootstraps standard or no-inbound landing mode. v2.7.10 additionally introduces the Agent lifecycle submenu, early CLI dispatch and read-only report helper, mirrored from the original script workspace; those changes do not change Xray deployment behavior.
 - The supplied Xray repository has no standalone LICENSE file; its source is included as user-provided project code with attribution. Review its licensing before separately redistributing it outside your own project.
 
 ## Dependencies

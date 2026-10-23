@@ -13,6 +13,10 @@ spec.loader.exec_module(module)
 
 class AgentSafetyTests(unittest.TestCase):
     def setUp(self):
+        for name in ('addresses', 'firewall'):
+            patcher = patch.object(module.system_report, name, return_value={})
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name) / 'xray'
         self.root.mkdir()

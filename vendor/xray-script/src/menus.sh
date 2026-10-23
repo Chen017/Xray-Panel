@@ -105,9 +105,10 @@ misc_menu() {
         _menu 4 "端口管理 (放行/关闭)"
         _menu 5 "更新"
         _menu 6 "卸载"
+        _menu 7 "集中管理 / Panel Agent"
 
         echo
-        echo -ne "  请选择 [${green}1-6${none}] [${red}0 返回主菜单${none}]: "
+        echo -ne "  请选择 [${green}1-7${none}] [${red}0 返回主菜单${none}]: "
         read -r REPLY || return
         [[ "$REPLY" == "0" ]] && return
 
@@ -165,6 +166,11 @@ misc_menu() {
             ;;
         6)
             if uninstall; then exit 0; fi
+            ;;
+        7)
+            load panel.sh
+            panel_agent_menu
+            pause
             ;;
         esac
     done

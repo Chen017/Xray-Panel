@@ -158,6 +158,13 @@ check_dependencies() {
     fi
 }
 
+# Agent lifecycle does not run Xray migration, dependency repair or restart paths.
+if [[ ${1:-} == agent ]]; then
+    load panel.sh
+    shift
+    panel_agent_menu "$@"
+    exit $?
+fi
 check_dependencies
 is_config_json=$is_core_dir/config.json
 is_relay_state_file=$is_core_dir/relay.json

@@ -16,6 +16,10 @@ spec = importlib.util.spec_from_file_location('panel_agent', REPO / 'agent/agent
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 workers = []
+# Public probes and firewall inventory are tested separately; integration fixtures
+# must never inspect the host firewall or depend on external networking.
+mod.system_report.addresses = lambda: {'checkedAt': '2026-01-01T00:00:00Z'}
+mod.system_report.firewall = lambda *args: {'status': 'unsupported', 'sources': []}
 
 
 def handle(msg):

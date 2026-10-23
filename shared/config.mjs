@@ -64,7 +64,7 @@ export function patchSettings(bundle,input) {
   return validateBundle(b);
 }
 export const ruleSchema=z.object({type:z.literal('field'),domain:z.array(z.string().min(1)).optional(),ip:z.array(z.string().min(1)).optional(),outboundTag:z.enum(['direct','direct-v4','direct-v6','block'])}).refine(r=>!!r.domain?.length!==!!r.ip?.length,'每条规则仅填写 domain 或 ip');
-export const landingSchema=z.object({id:z.string().regex(/^\d{1,6}$/),name:z.string().min(1).max(80),landing_ip:hostSchema,landing_port:portSchema,transport_uuid:z.string().uuid(),encryption:z.string().min(10).max(2000).refine(s=>s.startsWith('mlkem768x25519plus.')||s.startsWith('mlkem768x25519.')) ,client_uuid:z.string().uuid()});
+export const landingSchema=z.object({id:z.string().regex(/^\d{1,6}$/),name:z.string().min(1).max(80),landing_ip:hostSchema,landing_port:portSchema,transport_uuid:z.string().uuid(),encryption:z.string().min(10).max(2000).refine(s=>s.startsWith('mlkem768x25519plus.')||s.startsWith('mlkem768x25519.')) ,client_uuid:z.string().uuid(),nodeId:z.string().uuid().optional(),addressFamily:z.enum(['ipv4','ipv6']).optional()});
 export const relaySchema=z.discriminatedUnion('role',[
   z.object({role:z.literal('none')}),
   z.object({role:z.literal('line'),landings:z.array(landingSchema).min(1).max(32),failover:z.object({enabled:z.boolean(),interval:z.string().regex(/^[1-9]\d{0,4}s$/),order:z.array(z.string())})}),

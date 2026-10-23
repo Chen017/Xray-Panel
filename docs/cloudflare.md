@@ -89,3 +89,7 @@ Access 只在 Cloudflare 边缘验证。当前 Node 服务不验证 Access JWT�
 - [Service Tokens](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/)
 - [请求头转换规则](https://developers.cloudflare.com/rules/transform/request-header-modification/create-dashboard/)
 - [Bot Fight Mode](https://developers.cloudflare.com/bots/get-started/bot-fight-mode/)
+
+## Agent HTTP 403 / Cloudflare 1010
+
+若新版 Agent 日志显示 `HTTP 403 / CF 1010`，这是 Cloudflare Browser Integrity Check 对机器请求的拦截，不代表 Service Token 一定错误。在域名「Rules → Configuration Rules」只匹配 Agent / 订阅机器域名并关闭该规则的 Browser Integrity Check；保留 Service Auth 和源站校验。不要把管理后台一起放开，也不要设置 Access Bypass。先用带 CF 两个请求头的 `/health` 验证到达正确入口，再检查面板 Node ID 和 Bearer Token。

@@ -36,15 +36,27 @@ npm start
 
 **域名、Cloudflare DNS / 代理、1Panel HTTPS 证书已经配置好：直接按 [1Panel + Cloudflare Access 完整部署教程](docs/1panel.md) 操作。包含三个域名的反向代理、后台身份登录、订阅 / Agent 独立服务令牌、源站校验和验收，从 GitHub 拉取到打开登录页，无需手动上传项目或 Cloudflare Tunnel。**
 
-在 1Panel 的服务器终端拉取：
+在建站 VPS 的 root 终端执行（不需要安装 Xray Script）：
 
 ```bash
-cd /opt
-git clone https://github.com/Chen017/Xray-Panel.git xray-panel
-cd /opt/xray-panel
+(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.1.0/deploy/bootstrap.sh -o "$w"; bash "$w")
 ```
 
-创建 `.env` 后，在「容器 → 编排 → 创建 → 路径选择」使用 `/opt/xray-panel/deploy/1panel/docker-compose.yml`。该文件使用绝对路径，适用于 1Panel 导入；项目根目录的 `compose.yaml` 适用于在项目目录直接执行 Compose。
+打开编号菜单，选择「安装 Panel」，输入管理、订阅、Agent 三个 HTTPS 域名。管理器自动生成密钥、初始密码和配置，拉取 GHCR 的对应版本镜像并启动；VPS 不构建前端，也不用手动上传源码。以后输入 `xray-panel` 重新打开菜单。
+
+```bash
+xray-panel panel install
+xray-panel panel update
+xray-panel panel status
+xray-panel panel logs
+xray-panel panel uninstall
+```
+
+默认卸载保留数据卷、环境配置和备份。彻底清除需显式执行 `xray-panel panel uninstall --purge --confirm DELETE-PANEL-DATA`，不可恢复当前数据库；历史备份仍保留。管理器检测现有 1Panel 容器并沿用原 Compose 项目、数据卷和运行中的加密密钥，更新前保存一致数据库快照，健康检查失败恢复原镜像和数据库。
+
+管理器生成的编排位于 `/opt/xray-panel-manager/panel.compose.yaml`。已有 1Panel 编排只替换原编排内容，保留原名称；不要重复创建。配置路径见 `/opt/xray-panel-manager/panel.json`，初始新装默认 `.env` 为 `/opt/xray-panel/.env`，旧项目迁移使用 `/opt/xray-panel-manager/panel.env`。勿公开这些文件。
+
+安装要求 Debian / Ubuntu、systemd、Python >= 3.10；首次引导安装缺失依赖。镜像支持 Linux amd64 / arm64。**命令依赖对应版本 GitHub Release 和 GHCR 镜像已发布；发布工作流在测试和镜像上传成功后才创建 Release。** 指定版本可加 `--version 1.1.0`；未发布版本拉取失败不会替换正在运行的容器。
 
 三个 HTTPS 网站分别反向代理到本机 3000 / 3001 / 3002，`.env` 中三个 `ORIGIN` 填对应 HTTPS 域名，不带尾部 `/`。保留已配好的管理域名和证书，为订阅和 Agent 补齐各自站点与证书。
 
@@ -60,28 +72,38 @@ cd /opt/xray-panel
 
 同一个 Node 进程运行三个 HTTP 监听器，路由相互隔离；共享一个加密数据库，不需要额外订阅进程。不要把管理入口代理到订阅域名。
 
-生产 Docker 构建必须能够从 npm / Docker Hub 下载依赖。镜像构建阶段生成静态面板及不含 `.env`、数据库或凭据的 AGPL 源码包；运行阶段使用非 root 用户、只读根目录和独立数据卷。
+发布工作流在 GitHub 构建镜像，需要访问 npm / Docker Hub；VPS 只需访问 GitHub 和 GHCR。镜像构建阶段生成静态面板及不含 `.env`、数据库或凭据的 AGPL 源码包；运行阶段使用非 root 用户、只读根目录和独立数据卷。
 
 ## 接入每台 VPS
 
-1. 面板「添加节点」，填写客户端直连该 VPS 的 IP / 域名。
-2. 在弹出的「安装 VPS Agent」中，填入该 VPS 的 Cloudflare Client ID / Secret（Agent 入口启用 Service Auth 时必须填写）。这些字段只用于浏览器本地生成脚本，不提交给面板保存。
-3. 点击「下载专属安装脚本」，将 `xray-agent-install.sh` 放到目标 VPS，执行 `sudo bash xray-agent-install.sh`。也可复制完整脚本，在目标 VPS 的 root Bash 终端执行。
-4. 脚本自动下载固定提交的 Agent、安装缺少的依赖（Debian / Ubuntu）、写入权限为 600 的配置、安装并启动 systemd 服务。其他系统请先安装 curl、tar、Python >= 3.10、jq、util-linux 和 CA 证书。无需 Git、Node.js 或 Docker。
-5. 等待面板显示 Agent 在线，打开「管理」检查自动导入的脚本配置。接入 Agent 不会重新安装 Xray 或改变其现有配置。安装脚本含节点凭据，请勿分享，使用后删除；已有 Agent 配置会先备份。
-6. 需要手动安装时，弹窗「高级：原始配置」仍提供 Agent JSON，安装入口为仓库内 `deploy/install-agent.sh`。
-7. 未安装 Xray 的 VPS：在「运维」选择安装；需要输入节点名确认。纯落地环境先安装不监听中继，随后在互联页配置并部署。
-
-面板没有目标 VPS 的登录权限，因此首次需要在每台 VPS 执行一次脚本；接入后日常管理与配置部署均从面板完成。脚本是否启动成功与是否能通过 Cloudflare 认证是两件事；在线状态以面板心跳为准。
-
-服务检查：
+1. 在面板添加节点，留空的客户端地址默认自动检测，也可填写手动 IP / 域名。
+2. 填写该 VPS 的 CF Access Client ID / Secret，复制「完整安装脚本」，直接粘贴到目标 VPS 的 root Bash 终端执行即可；也可下载脚本执行。**独立一键安装保留，不需要 Xray Script。**
+3. 另一种方式是先执行上方不含凭据的管理器命令，再运行 `xray-panel agent install`，一次粘贴面板生成的接入信息；输入隐藏，无需编辑 JSON。
+4. 等待面板显示在线并自动导入现有配置。接入只安装 Agent，不会重新安装或部署 Xray。
 
 ```bash
-systemctl status xray-panel-agent --no-pager
-journalctl -u xray-panel-agent -n 50 --no-pager
+xray-panel agent install
+xray-panel agent update
+xray-panel agent status
+xray-panel agent logs
+xray-panel agent uninstall
 ```
 
-Agent 需要 root，因为它必须修改 Xray 系统目录、重启服务、管理防火墙和安装更新。它不监听任何网络端口，不接受任意 Shell 命令，默认只访问 HTTPS；JSON 配置通过文件传递而非拼进命令行。HTTPS 重定向会被拒绝，避免把凭据发往错误地址。正常管理无需开放公网 SSH。
+安装和更新均先检查 `/etc/xray-panel-agent/config.json` 和旧 systemd 服务。重复安装保留节点身份、CF 凭据、自定义 Xray / 状态目录；不同节点 ID 会拒绝覆盖。轮换 Token 后可重新粘贴同一节点的新接入信息。旧版 `/opt/xray-panel/agent` 会迁移到独立 `/opt/xray-panel-agent`，不会删除共享的 Panel 目录；更新失败恢复旧程序、配置与服务状态。
+
+Xray Script 更新后也可在「杂项管理 → Panel Agent 管理」进入相同菜单，或直接 `xray agent install|update|uninstall|status|logs`。它会先检查本机是否已有 Agent，不经过 Xray 配置迁移或重装流程。
+
+Agent 卸载默认保留接入配置和任务状态；`--purge --confirm DELETE-AGENT-DATA` 才清除默认凭据与状态。无论哪种卸载都保留 Xray。Agent 不监听公网端口，凭据不放到命令参数或 URL；安装脚本内的 Base64 只是传递格式，含真实凭据，请勿分享。首次仍需在每台 VPS 执行一次命令，因为 Panel 没有该 VPS 的登录权限。
+
+## 公网地址与节点操作
+
+节点页分基础参数、分流规则、线路 / 落地、运维、高级五页。UUID、密钥、Short IDs、XHTTP 和完整 JSON 在高级折叠项；常用 SNI、方向、端口和出站策略在基础页。运维点击后直接显示任务窗口，状态和输出来自真实任务回执；关闭窗口不取消任务，可在节点和全局任务历史重新打开。
+
+新版 Agent 每 5 分钟分别探测公网 IPv4 / IPv6，两个独立时间点结果一致且间隔至少 10 秒才采用；支持立即检测。失败保留最后有效地址。旧记录按原手动值迁移；NAT、DDNS 或入站地址与出站公网不同的机器应设置手动覆盖。节点页显示当前有效值、来源、时间和待确认状态。仅改变客户端地址更新订阅，不重启 Xray。
+
+线路可关联面板中的落地节点，之后跟随该落地的有效地址和公网映射端口，通过正常校验、部署与回滚任务更新线路出站。未接入面板的外部落地仍可手动配置；NAT 映射本身需在宿主机或云平台配置。
+
+运维防火墙显示实际 iptables / ip6tables / nftables 规则快照（地址族、协议、来源、端口、动作和原始表达式），与 Xray 自动端口、手动附加开关策略分开。权限不足或缺少工具明确显示不可读取；没列出的端口不能据此判断为关闭，本机规则也不能证明云防火墙或 NAT 后公网可达。
 
 ## 使用顺序
 
@@ -120,7 +142,7 @@ Agent 需要 root，因为它必须修改 Xray 系统目录、重启服务、管
 
 加密 JSON 备份和恢复支持最大 64 MiB、100,000 条记录；导出前检查相同上限，避免生成无法恢复的文件。较大的恢复正文只有通过管理员会话、Origin 和 CSRF 验证后才解析，其他接口仍保留 2 MiB 限制。
 
-更新面板时也应更新每台 VPS 的 agent/，重新运行 deploy/install-agent.sh 并重启 Agent；保留原 Agent 配置、数据库与 PANEL_MASTER_KEY。本次修复后的版本为 1.0.1，Agent 心跳中的 agentVersion 同步更新。
+Panel 和 Agent 分别使用 `xray-panel panel update`、`xray-panel agent update` 更新。旧 Agent 仍能连接新版 Panel；公网探测和防火墙快照需要在对应 VPS 单独更新 Agent，不会由 Panel 更新自动改动所有 VPS。始终保留原加密密钥和身份。
 
 ## 本地测试
 

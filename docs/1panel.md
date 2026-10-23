@@ -23,98 +23,31 @@
 
 域名注册商不用更换；Cloudflare DNS API 申请证书、橙云代理和 Zero Trust Access 是不同设置。此处只补齐缺少的两个站点和证书，不重做已经正常工作的管理域名。随后先配置 Access，再将网站代理到程序，避免管理页面在配置期间无 Access 保护。
 
-## 第 1 步：在 1Panel 终端拉取项目
+## 第 1 步：在 1Panel 终端一键安装
 
-打开建站 VPS 的 1Panel，进入「终端」，连接本机终端。下面的命令在服务器执行，不是在自己电脑执行。使用 root 终端；已经配置好的 Docker 和 OpenResty 不需要重装。
-
-先确认工具：
+打开建站 VPS「终端」，使用 root 连接本机：
 
 ```bash
-git --version
-openssl version
-docker compose version
+(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.1.0/deploy/bootstrap.sh -o "$w"; bash "$w")
 ```
 
-如果 Debian / Ubuntu 缺少 Git 或 OpenSSL：
+进入编号菜单，选择「安装 Panel」。以后直接输入 `xray-panel`。不需要先装 Xray Script，也不需要上传源码或在 VPS 构建镜像。
 
-```bash
-apt-get update
-apt-get install -y git openssl
-```
+## 第 2 步：按提示输入三个域名
 
-如果没有 Docker / Compose，先到 1Panel「容器」页面完成容器引擎安装。服务器还需要能访问 GitHub、Docker Hub 和 npm；本项目首次启动会构建镜像。
+依次输入管理、订阅、Agent 的完整域名。例如 `xpanel.pisces.qzz.io`、`xsub.pisces.qzz.io`、`xagent.pisces.qzz.io`，请使用你自己的记录。管理器生成随机 master key、初始管理员密码、三个 HTTPS ORIGIN，然后拉取已发布的 GHCR 版本镜像（amd64 / arm64）。
 
-拉取公开仓库：
+新安装配置为 `/opt/xray-panel/.env`，权限 600。使用 1Panel 文件管理器查看初始密码，安全保存 `PANEL_MASTER_KEY`，不要把配置上传 GitHub。旧项目迁移会从运行容器保留原密钥和配置，写入 `/opt/xray-panel-manager/panel.env`。实际路径记录在 `/opt/xray-panel-manager/panel.json`。
 
-```bash
-cd /opt
-git clone https://github.com/Chen017/Xray-Panel.git xray-panel
-cd /opt/xray-panel
-```
+Debian / Ubuntu 自动安装缺失依赖。已有 1Panel Docker 不重装。服务器需可访问 GitHub、GHCR；对应版本 Release 和镜像发布完成后才能安装。下载或拉取失败时保留原容器。
 
-成功后，在 1Panel「文件」中打开 `/opt/xray-panel`，应能看到 `Dockerfile`、`package.json`、`deploy` 等文件。Git 会自动检出仓库的默认分支，不用手动填写分支名。
+## 第 3 步：在 1Panel 查看编排
 
-如果提示目录已存在，先检查目录内容；已经克隆过的项目在该目录执行 `git pull --ff-only` 即可，不要再次覆盖或删除目录。
+管理器已经启动容器。`xray-panel panel status` 查看状态，`xray-panel panel logs` 查看日志。
 
-## 第 2 步：创建服务器自己的配置
+如要从 1Panel 管理，进入「容器 → 编排」，使用管理器生成的 `/opt/xray-panel-manager/panel.compose.yaml` 内容。**旧编排请保留原名称并替换内容，勿另建第二个项目。** 管理器已检测并沿用原项目和数据卷，生成文件明确使用外部数据卷。新装默认项目为 `xray-panel`，数据卷为 `xray-panel_panel-data`。
 
-在同一个终端执行：
-
-```bash
-cd /opt/xray-panel
-cp -n .env.example .env
-chmod 600 .env
-openssl rand -hex 32
-openssl rand -hex 24
-```
-
-最后两条命令分别生成：
-
-1. 第一行 64 位随机值：数据库加密密钥。
-2. 第二行 48 位随机值：首次登录管理员密码。
-
-在 1Panel「文件」中打开 `/opt/xray-panel/.env`，启用显示隐藏文件。编辑以下六项；不要把 `＜…＞` 说明文字也填进去：
-
-```dotenv
-PANEL_MASTER_KEY=＜第一行随机值＞
-PANEL_ADMIN_PASSWORD=＜第二行随机值＞
-PANEL_ADMIN_ORIGIN=https://panel.yourdomain.com
-PANEL_SUBSCRIPTION_ORIGIN=https://sub.yourdomain.com
-PANEL_AGENT_ORIGIN=https://agent.yourdomain.com
-PANEL_SECURE_COOKIE=true
-```
-
-注意：
-
-- 三个 `ORIGIN` 都换成对应真实域名，使用 `https://`，末尾不加 `/`，不加路径，不加内部端口。
-- 其余行保留模板默认值。Cloudflare 服务令牌在后面的步骤创建，不填写进控制中心的 `.env`。
-- 不要上传 `.env` 到 GitHub。它已经被项目的 Git 忽略规则排除。
-- 保存好第一行密钥和第二行密码。以后更新项目保留此 `.env`；重新生成密钥会导致旧数据库无法解密。
-
-这里不需要安装 Node.js，也不需要在宿主机执行 `npm install`，镜像构建会完成这些工作。
-
-## 第 3 步：在 1Panel 创建容器编排
-
-1. 进入「容器 → 编排」。
-2. 点击「创建编排」。
-3. 名称填写 `xray-panel`。
-4. 选择「路径选择」。
-5. 选择服务器上的文件：
-
-   ```text
-   /opt/xray-panel/deploy/1panel/docker-compose.yml
-   ```
-
-6. 确认创建并启动，等待构建结束。名称类似“立即启动”的选项如果存在，保持勾选。
-7. 在该编排的容器列表中，确认 `panel` 服务对应的容器处于运行状态；稍后健康状态应为 `healthy`。
-
-如果版本中的路径选择控件不能选中该文件，可在 1Panel 文件管理器复制这个文件的全部内容，再在「创建编排 → 编辑」中粘贴。使用的仍是 `deploy/1panel/docker-compose.yml`，不要把项目根目录里的相对路径版本直接粘贴进去。
-
-专用编排使用绝对源码路径和绝对 `.env` 路径，避免 1Panel 的编排目录影响镜像构建。数据存储在固定名称的 Docker 卷 `xray-panel_panel-data` 中，重建容器不会删除它。
-
-已经部署过旧版本时，先检查旧容器挂载的数据卷名称。若不是 `xray-panel_panel-data`，把专用编排底部 `name:` 改成现有卷名，避免误接到一个空数据库。本步骤面向首次部署，不创建第二份运行中的面板。
-
-首次构建需要下载基础镜像和依赖，通常比后续启动慢。若失败，先在编排日志中找到第一条失败原因，不要重复创建多个同名编排。
+更新执行 `xray-panel panel update`，自动备份一致数据库和配置，健康检查失败恢复旧镜像与数据库。网站、证书和 Cloudflare 配置不由安装器更改。默认卸载保留数据，详细命令见 [README](../README.md)。
 
 ## 第 4 步：确认网站程序已正常运行
 
@@ -136,7 +69,7 @@ curl -fsS http://127.0.0.1:3002/health
 
 这一步成功说明程序已在服务器本机运行。3000、3001、3002 都只绑定到本机地址，无需给它们开放公网防火墙端口。
 
-如果不是这个结果，先检查 1Panel 的容器日志，常见原因是 `.env` 密钥格式不对、密码少于 16 字符、端口已被其他程序占用或首次构建没有成功。此时先不要修改已正常工作的证书和 DNS。
+如果不是这个结果，先检查 1Panel 的容器日志，常见原因是 `.env` 密钥格式不对、密码少于 16 字符、端口已被其他程序占用或镜像拉取失败。此时先不要修改已正常工作的证书和 DNS。
 
 <a id="access"></a>
 
@@ -397,7 +330,7 @@ https://panel.yourdomain.com
 
 | 现象 | 检查位置 |
 | --- | --- |
-| `127.0.0.1:3000/api/health` 访问失败 | 1Panel 编排构建日志、容器日志和容器状态；先解决程序启动问题 |
+| `127.0.0.1:3000/api/health` 访问失败 | 1Panel 编排日志、容器日志和容器状态；先解决程序启动问题 |
 | 健康检查成功，域名显示 502 | 网站代理地址、OpenResty 网络模式，是否误填 HTTPS 上游 |
 | 仍显示 1Panel 默认页 / 原网站 | 根路径代理是否生效，是否编辑了正确域名的站点；清理已有的站点缓存 |
 | 页面能打开，登录提示“请求来源不匹配” | `.env` 中 `PANEL_ADMIN_ORIGIN` 必须与浏览器协议和域名一致；修改后需重建容器以载入新环境变量，单纯重启不够 |
@@ -411,7 +344,7 @@ https://panel.yourdomain.com
 
 修改 `.env` 后，在原编排中执行重新创建 / 重建容器，保留数据卷；不要仅点击“重启”，也不要另外创建第二个编排。不同版本按钮名称可能为“重建”或“更新”，目标是让 Compose 用新环境变量重新创建原服务。
 
-更新项目时保留 `.env`、现有数据卷、三个网站配置和 Cloudflare 规则。在 `/opt/xray-panel` 执行 `git pull --ff-only` 后，于原编排重新构建镜像并重新创建原服务；不要删除数据卷。每台设备 / VPS 的 CF 令牌和面板令牌分别撤销和轮换：撤销面板授权不会自动删除 Cloudflare Service Token。
+更新使用 `xray-panel panel update`，保留现有项目、卷和加密密钥，不需要 `git pull` 或重新构建。旧 Agent 兼容，但新地址探测和防火墙快照需在各 VPS 执行 `xray-panel agent update`。每台设备 / VPS 的 CF 令牌和面板令牌分别撤销和轮换：撤销面板授权不会自动删除 Cloudflare Service Token。
 
 ## 参考与验证范围
 

@@ -2,8 +2,7 @@
 # Absolute paths remain valid when 1Panel copies this Compose file.
 services:
   panel:
-    build:
-      context: /opt/xray-panel
+    image: ${PANEL_IMAGE:-ghcr.io/chen017/xray-panel:1.1.0}
     restart: unless-stopped
     env_file:
       - /opt/xray-panel/.env

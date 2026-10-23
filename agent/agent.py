@@ -2,6 +2,7 @@
 """Outbound-only Xray Panel Agent. Python 3.10+, no pip dependencies."""
 import argparse
 import hashlib
+import importlib.util
 import ipaddress
 import json
 import os
@@ -20,9 +21,12 @@ import urllib.parse
 import urllib.request
 
 HERE = Path(__file__).resolve().parent
+_report_spec = importlib.util.spec_from_file_location('xray_system_report', HERE / 'system_report.py')
+system_report = importlib.util.module_from_spec(_report_spec)
+_report_spec.loader.exec_module(system_report)
 ROOT_FILES = {'config.json', 'relay.json', 'custom_rules.json', 'firewall_ports.json'}
 SAFE_CONF = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,100}\.json\Z')
-ACTIONS = {'deploy', 'inspect', 'validate', 'dump', 'logs', 'start', 'stop', 'restart', 'enable', 'disable', 'update-core', 'update-script', 'update-geodata', 'maintenance', 'bbr', 'diagnostics', 'relay-test', 'relay-keygen', 'uninstall', 'install-standard', 'install-landing'}
+ACTIONS = {'deploy', 'inspect', 'detect-addresses', 'firewall-status', 'validate', 'dump', 'logs', 'start', 'stop', 'restart', 'enable', 'disable', 'update-core', 'update-script', 'update-geodata', 'maintenance', 'bbr', 'diagnostics', 'relay-test', 'relay-keygen', 'uninstall', 'install-standard', 'install-landing'}
 
 
 def canonical(value):
@@ -158,6 +162,10 @@ class Agent:
             raise ValueError('Agent state directory must not be a symlink')
         self.state.chmod(0o700)
         self.opener = urllib.request.build_opener(NoRedirect())
+        self.cached_network = None
+        self.cached_firewall = None
+        self.network_at = 0
+        self.firewall_at = 0
 
     def request(self, route, payload):
         headers = {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + self.config['token'], 'X-Node-ID': self.config['nodeId']}
@@ -188,7 +196,16 @@ class Agent:
         if entry.is_file():
             match = re.search(r'^is_sh_ver=(.+)$', entry.read_text(), re.MULTILINE)
             script_version = match.group(1) if match else ''
-        return {'installed': installed, 'version': version, 'scriptVersion': script_version, 'active': status.strip() == 'active', 'hostname': socket.gethostname(), 'listen4': listen4, 'agentVersion': '1.0.1', 'platform': sys.platform}
+        now = time.monotonic()
+        if now - self.network_at >= 300 or self.cached_network is None:
+            self.cached_network = system_report.addresses()
+            self.network_at = now
+        if now - self.firewall_at >= 60 or self.cached_firewall is None:
+            try: bundle = read_bundle(self.root)
+            except (OSError, ValueError): bundle = None
+            self.cached_firewall = system_report.firewall(bundle)
+            self.firewall_at = now
+        return {'installed': installed, 'version': version, 'scriptVersion': script_version, 'active': status.strip() == 'active', 'hostname': socket.gethostname(), 'listen4': listen4, 'agentVersion': json.loads((HERE.parent / 'package.json').read_text())['version'], 'platform': sys.platform, 'network': self.cached_network, 'firewall': self.cached_firewall}
 
     def snapshot(self):
         """A damaged configuration must not disconnect the management channel."""
@@ -223,7 +240,7 @@ class Agent:
             current, config_error = self.snapshot()
             if job['action'] == 'deploy' and not config_error and current is not None and bundle_hash(current) == job['payload']['targetHash']:
                 return self.current_result(job, {'ok': True, 'output': 'Previous deployment already committed.'})
-            if job['action'] not in {'inspect', 'validate', 'logs', 'diagnostics'}:
+            if job['action'] not in {'inspect', 'detect-addresses', 'firewall-status', 'validate', 'logs', 'diagnostics'}:
                 return self.current_result(job, {'ok': False, 'output': 'Previous execution was interrupted. Refusing to replay this mutation; inspect the node and create a new task.'})
         def save(value):
             tmp = journal.with_suffix('.tmp')
@@ -240,7 +257,12 @@ class Agent:
             env['PANEL_TEST_DRIVER'] = str(Path(self.config['testDriver']).resolve())
         output = ''
         try:
-            if job['action'] == 'inspect':
+            if job['action'] in {'detect-addresses', 'firewall-status'}:
+                if job['action'] == 'detect-addresses': self.network_at = 0; self.cached_network = None
+                else: self.firewall_at = 0; self.cached_firewall = None
+                report = self.report()
+                ok, output = True, json.dumps(report['network' if job['action'] == 'detect-addresses' else 'firewall'], ensure_ascii=False, indent=2)
+            elif job['action'] == 'inspect':
                 _, config_error = self.snapshot()
                 ok, output = not config_error, config_error or 'Imported current Xray configuration.'
             elif job['action'] == 'deploy':
@@ -291,9 +313,23 @@ class Agent:
             try:
                 self.once()
             except Exception as exc:
-                # Never log request headers, tokens, keys, or response bodies.
-                print('Agent connection/operation failed:', type(exc).__name__, flush=True)
+                print('Agent connection/operation failed:', connection_error(exc), flush=True)
             time.sleep(5)
+
+
+def connection_error(exc):
+    # Report only status and recognized numeric Cloudflare codes, never arbitrary bodies.
+    if isinstance(exc, urllib.error.HTTPError):
+        try: body = exc.read(2048).decode('utf-8', 'replace')
+        except Exception: body = ''
+        match = re.search(r'(?:error code:|Error)\s*(\d{4,5})', body, re.I)
+        code = match.group(1) if match else None
+        hint = {401: 'check node ID and Panel Agent Token', 403: 'check CF Service Auth policy and origin guard', 404: 'check Agent hostname/path', 429: 'rate limited; retry later'}.get(exc.code, 'check control centre availability')
+        if code == '1010': hint = 'Cloudflare BIC blocks machine clients; configure a hostname-scoped BIC exception'
+        return 'HTTP ' + str(exc.code) + (' / CF ' + code if code else '') + ': ' + hint
+    if isinstance(exc, ValueError) and 'Redirect refused' in str(exc):
+        return 'Redirect refused: check HTTPS Agent URL and Service Auth (no browser login)'
+    return type(exc).__name__
 
 
 def main():

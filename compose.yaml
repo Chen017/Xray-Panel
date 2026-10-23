@@ -1,6 +1,6 @@
 services:
   panel:
-    build: .
+    image: ${PANEL_IMAGE:-ghcr.io/chen017/xray-panel:1.1.0}
     restart: unless-stopped
     env_file: .env
     environment:
