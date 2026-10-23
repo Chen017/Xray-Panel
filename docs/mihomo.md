@@ -1,36 +1,26 @@
-# Mihomo 与 Clash Verge Rev 本地订阅配置
+# Mihomo / Clash Verge Rev 订阅
 
-保留你现有的主配置，包括 DNS、TUN、rules、rule-providers 和策略组。只增加一个远程 proxy-provider，并让需要使用这些节点的策略组引用它。
+保留现有 DNS、TUN、策略组和分流规则，只添加远程 `proxy-providers` 并在策略组引用它。订阅只提供节点，不会替换本地主配置。
 
-## 1. 检查实际核心能力
+## 1. 准备设备授权
 
-使用支持 XHTTP 和 `age-secret-key` 的 Mihomo。本项目针对本地 v1.19.32 测试；Clash Verge Rev 的应用版本不等于内置核心版本，请在应用信息页或运行 `mihomo -v` 检查。
+使用支持 XHTTP 和 `age-secret-key` 的 Mihomo；本项目已用 v1.19.32 验证。Clash Verge Rev 的应用版本不等于内置核心版本，应检查实际核心。
 
-可通过 `mihomo age keygen` 验证 age CLI 是否存在；正式使用前对完整配置执行 `mihomo -t -f config.yaml`。如果提示未知命令 / 字段，更新到具备相应能力的正式核心。
+在面板「设备与订阅」创建设备，选择节点、出口与模式：
 
-## 2. 创建设备
+| 模式 | 适用网络 |
+| --- | --- |
+| `split` | 客户端和节点都能使用 IPv4 + IPv6 |
+| `single4` / `vision4` | 仅用 IPv4 |
+| `single6` / `vision6` | 仅用 IPv6 |
 
-在面板「设备与订阅 → 授权设备」输入名称，选择：
+在浏览器本地生成 age 密钥，保存仅显示一次的配置；私钥不会上传服务器。也可执行 `mihomo age keygen`，将 `age1…` 公钥填入面板，`AGE-SECRET-KEY-1…` 私钥留在客户端。
 
-- 允许使用的节点。
-- 每个节点允许的出口（本机直出或指定落地）。
-- 客户端连接模式：split / single4 / single6 / vision4 / vision6。
+保存授权会自动部署设备独立 UUID。等有关 Agent 任务成功后再拉取，不需要先把旧配置重新部署一遍。手动生成密钥时，记得自行填入客户端私钥。
 
-split 要求节点同时填写可达的 IPv4 和 IPv6 地址，并且客户端网络能使用这两个地址族。客户端无 IPv6 时选择 single4 或 vision4。不满足地址条件的模式不会发布。
+## 2. 合并 provider
 
-在浏览器本地生成密钥，或在客户端执行：
-
-```bash
-mihomo age keygen
-```
-
-把输出的 age1... 公钥填入面板；AGE-SECRET-KEY-1... 私钥只保存在自己的设备。面板只接受设备登记时保存的公钥，不信任订阅请求中可随意修改的公钥。
-
-保存后等待 Agent 的 device-sync 任务成功。面板显示的首次配置含 Token 和本地生成的私钥，请马上保存；关闭后不能找回 Token。若自行在本机生成密钥，首次配置中的私钥位置需要自己填写。
-
-## 3. 合并 proxy-provider
-
-以下是占位示例；实际 URL 和 Authorization 值由面板生成。
+优先使用面板生成的配置。下面是字段示例，URL、Token、私钥和 CF 凭据均需替换：
 
 ```yaml
 proxy-providers:
@@ -43,28 +33,26 @@ proxy-providers:
     age-secret-key: "AGE-SECRET-KEY-1本设备私钥"
     header:
       Authorization:
-        - "Bearer 面板设备TOKEN"
+        - "Bearer 本设备的面板TOKEN"
       CF-Access-Client-Id:
-        - "本设备的CF服务令牌Client ID原值"
+        - "本设备的CF服务令牌Client ID"
       CF-Access-Client-Secret:
-        - "本设备的CF服务令牌SECRET"
+        - "本设备的CF服务令牌Secret"
     health-check:
       enable: true
       url: https://www.gstatic.com/generate_204
       interval: 300
-      timeout: 5000
-      lazy: true
 ```
 
-没有对订阅域名启用 Cloudflare Service Auth 时，移除两个 CF-Access-* 头。其他字段保持不变。推荐按 docs/cloudflare.md 开启 Service Auth。
+已有 `proxy-providers` 时，只把 `xray` 子项合并进去，不要重复顶层键；每个 provider 使用独立的缓存路径。
 
-`proxy: DIRECT` 让订阅通过直连获取，避免订阅更新依赖订阅里的节点所造成的启动循环。如果你的网络不能直连该订阅域名，指定已有且独立可用的代理策略，并验证它不会依赖这个 provider。
+订阅域名开启 Service Auth 时必须保留两个 CF 头，见 [Cloudflare 配置](cloudflare.md)。未启用该层认证才删除这两个头，保留面板的 Authorization。公钥已在面板登记，无需发送 `X-Age-Public-Key`。
 
-如果已有 proxy-providers，请把 xray 项合并进去，不要再写第二个同名顶层键。路径应在 Mihomo 配置目录内，每个 provider 路径唯一。
+`proxy: DIRECT` 避免拉取依赖尚未获取的节点；若所在网络无法直连订阅域名，可改为已有且独立可用的代理策略，不要形成循环依赖。
 
-## 4. 引用本地策略组
+## 3. 让策略组使用节点
 
-在你现有的目标策略组里增加 `use: [xray]`；保留原有的 proxies 成员、DNS 和分流规则。一个最小例子：
+在现有目标策略组的 `use` 列表追加 `xray`，其他成员和本地规则保留。例如：
 
 ```yaml
 proxy-groups:
@@ -74,41 +62,23 @@ proxy-groups:
       - DIRECT
     use:
       - xray
-
-rules:
-  - MATCH,节点选择
 ```
 
-上述 rules 只用于全新最小配置。已有本地规则时继续使用自己的 rules，不要整体替换。其他 url-test / fallback / load-balance 策略组也可以按需添加 use。
+这是合并示例，不要用它覆盖已有 `proxy-groups`。Clash Verge Rev 中保存到持久化本地配置或 Merge / Script 配置，避免修改生成的临时运行文件。重载后查看 provider 拉取状态；也可用 `mihomo -t -f config.yaml` 检查完整配置。
 
-Clash Verge Rev 中应把修改保存在持久化本地配置或 Merge / Script 配置里，避免编辑应用生成的临时配置。选择该本地配置并重新载入，在 provider 页面检查拉取和健康检查结果。
+## 更新与排错
 
-## 5. 实际分发内容
+provider 默认每小时刷新，节点部署成功后下次拉取生效，也可手动刷新。控制中心故障时，已有 VPS 配置继续运行，客户端使用最后可用缓存；首次导入仍需服务可访问。
 
-订阅服务生成的明文结构仅为：
+| 现象 | 检查 |
+| --- | --- |
+| 302 / HTML / Access 登录页 | 两个 CF 头、Service Auth 策略及令牌有效期 |
+| 403 / 1010 | [Cloudflare 机器请求例外](cloudflare.md#troubleshoot) |
+| 面板 JSON 401 | 设备 Token 是否撤销 / 轮换，是否误用 Agent Token |
+| 503 / 节点为空 | 设备授权、UUID 部署任务、节点发布开关、所选模式的地址条件 |
+| age 解密失败 | 私钥是否对应面板公钥，响应是否确实为 age armor |
+| 能拉取但组内无节点 | 策略组是否添加 `use: [xray]` |
 
-```yaml
-proxies:
-  - name: "线路 01 · 落地 A · split"
-    type: vless
-    # 其余字段按已部署配置生成
-```
+轮换面板 Token 后更新 Authorization；轮换 UUID 还需等待 VPS 同步；更换公钥时同步更换本地私钥。设备撤销无法抹除已下载配置，离线 VPS 需恢复在线后才能删除其旧 UUID。
 
-服务端用登记的公钥进行 age 加密，并输出 ASCII armor。Mihomo 使用本地 `age-secret-key` 解密。不会下发 DNS、策略组或 rules；不会把服务器 REALITY 私钥、中继 decryption 或设备 age 私钥写入订阅。
-
-同一设备的每节点、每出口 UUID 独立；原脚本的主 UUID 和中继 transport_uuid 不作为设备订阅凭据。
-
-## 6. 更新、撤销及排错
-
-- 修改节点后部署成功：Mihomo 在下次 interval 拉取时得到新节点；也可在应用中手动刷新该 provider。
-- 401：设备 Token 已撤销 / 轮换，或者错误使用了 Agent Token；替换本设备 Authorization。
-- 302、HTML 或 Access 登录页：Cloudflare Service Auth 配错，检查两个 CF 请求头与策略。
-- 503：还没有此设备可用的已部署 UUID，或者选择的模式缺少地址；检查任务结果、节点发布开关和地址。
-- age 解密失败：客户端私钥与面板登记公钥不匹配，或响应不是 age armor；不要通过关闭 TLS 验证解决。
-- 节点为空：检查本设备是否授权正确出口、已部署 UUID，以及 IPv4 / IPv6 地址是否满足所选模式。
-- 控制中心暂时故障：已有节点继续运行；provider 更新失败时继续使用最后可用缓存。首次导入仍需要控制中心可访问。
-- 轮换 UUID 后等待 VPS 同步；离线节点的旧 UUID 需要恢复在线后才能移除。撤销订阅 Token 不能远程抹除设备已持有的旧配置。
-
-本地配置含 Token 和 age 私钥，请按个人凭据保护，不要提交到公共 Git 仓库。
-
-官方字段参考（2026-10-23 核对）：https://wiki.metacubex.one/en/config/proxy-providers/
+本地 YAML 含真实 Token 和私钥，应作为凭据保管。官方字段说明见 [Mihomo proxy-providers](https://wiki.metacubex.one/config/proxy-providers/)。
