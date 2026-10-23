@@ -181,6 +181,6 @@ https://panel.yourdomain.com
 
 ## 参考与验证范围
 
-已核对 [1Panel 编排](https://1panel.pro/docs/v2/user_manual/containers/composes/)、[1Panel 网站配置](https://docs.fit2cloud.com/en/1panel/user-manual/websites/website-config-basic/)、[Cloudflare Full (strict)](https://developers.cloudflare.com/ssl/origin-configuration/ssl-modes/full-strict/)。
+已核对 [1Panel 编排](https://1panel.pro/docs/v2/user_manual/containers/composes/)、[1Panel 网站配置](https://1panel.pro/docs/v2/user_manual/websites/website_config_basic/)、[Cloudflare Full (strict)](https://developers.cloudflare.com/ssl/origin-configuration/ssl-modes/full-strict/)。
 
 本项目的服务与登录页已经过本地测试；专用编排已做 YAML 静态校验，包括路径、端口与持久化配置。尚未连接你的 VPS，不能声称已经验证了你这台服务器上的 1Panel、OpenResty、证书和 Cloudflare 设置。
