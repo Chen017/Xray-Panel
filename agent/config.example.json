@@ -1,0 +1,9 @@
+{
+  "nodeId": "REPLACE_WITH_PANEL_NODE_ID",
+  "url": "https://agent.example.com",
+  "token": "REPLACE_WITH_AGENT_BEARER_TOKEN",
+  "xrayRoot": "/usr/local/etc/xray",
+  "stateDir": "/var/lib/xray-panel-agent",
+  "CF-Access-Client-Id": "REPLACE_WITH_THIS_VPS_SERVICE_TOKEN_ID",
+  "CF-Access-Client-Secret": "REPLACE_WITH_THIS_VPS_SERVICE_TOKEN_SECRET"
+}

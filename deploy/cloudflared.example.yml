@@ -1,0 +1,10 @@
+tunnel: YOUR-TUNNEL-ID
+credentials-file: /etc/cloudflared/YOUR-TUNNEL-ID.json
+ingress:
+  - hostname: panel.example.com
+    service: http://127.0.0.1:3000
+  - hostname: sub.example.com
+    service: http://127.0.0.1:3001
+  - hostname: agent.example.com
+    service: http://127.0.0.1:3002
+  - service: http_status:404

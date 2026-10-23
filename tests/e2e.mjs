@@ -1,0 +1,60 @@
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { createServer } from 'node:net';
+import path from 'node:path';
+import { writeFileSync,existsSync } from 'node:fs';
+import * as age from 'age-encryption';
+import YAML from 'yaml';
+import { testSystem,fixtureBundle } from './helpers.mjs';
+import { driver,linuxPath } from './linux.mjs';
+import { hashBundle,readSettings,clone } from '../shared/config.mjs';
+
+const sys=await testSystem(),linux=driver();let assertions=0;
+const pass=name=>{assertions++;console.log('PASS',name);};
+const core=linuxPath(process.env.XRAY_LINUX_BIN??(existsSync('.local/tools/v26.3.27/xray')?'.local/tools/v26.3.27/xray':'../Xray-Script/Xray/.test-tools/v26.3.27/xray'));
+const mihomo=linuxPath(process.env.MIHOMO_LINUX_BIN??(existsSync('.local/tools/mihomo')?'.local/tools/mihomo':'../Xray-Script/Xray/.test-tools/mihomo'));
+const root=linuxPath(path.join(sys.dir,'vps')),secondRoot=linuxPath(path.join(sys.dir,'landing'));
+let config,config2;
+const once=async()=>linux.call({action:'once',root,config});
+const node=async()=>((await sys.call('/nodes')).body).find(n=>n.id===config.nodeId);
+const jobs=async()=>((await sys.call('/jobs')).body).filter(j=>j.nodeId===config.nodeId);
+async function saveDeploy(bundle){const n=await node();const save=await sys.call(`/nodes/${n.id}/draft`,'PUT',{revision:n.revision,bundle});assert.equal(save.status,200,JSON.stringify(save.body));const queued=await sys.call(`/nodes/${n.id}/deploy`,'POST',{revision:save.body.revision});assert.equal(queued.status,202,JSON.stringify(queued.body));await once();return(await jobs()).find(j=>j.id===queued.body.id);}
+try{
+  await sys.login();
+  const c=(await sys.call('/nodes','POST',{name:'集成测试线路',ipv4:'127.0.0.1',ipv6:'::1'})).body;
+  config={nodeId:c.node.id,token:c.agentToken,url:sys.urls[2],allowLoopbackHttp:true};
+  const initial=fixtureBundle();const init=await linux.call({action:'init',root,bundle:initial,core});assert.ok(init.version.includes('26.3.27'));
+  await once();assert.equal((await node()).online,true);assert.equal(hashBundle((await node()).observed),hashBundle(initial));pass('real Linux Agent imports existing Xray configuration without mutation');
+  const identity=await age.generateIdentity(),publicKey=await age.identityToRecipient(identity);
+  const d=(await sys.call('/devices','POST',{name:'集成测试笔记本',publicKey,grants:[{nodeId:config.nodeId,routes:['direct'],modes:['split','single4','single6','vision4','vision6']}]})).body;
+  assert.ok(d.token);assert.equal((await fetch(d.url,{headers:{Authorization:`Bearer ${d.token}`}})).status,503);await once();
+  const deployed=await node();const latest=(await jobs())[0];assert.equal(latest.status,'succeeded',latest.output);assert.ok(deployed.appliedAt);pass('device grant auto-deploys separate UUID through real Xray run -test');
+  const encrypted=await (await fetch(d.url,{headers:{Authorization:`Bearer ${d.token}`}})).text();
+  const native=await linux.call({action:'mihomo-decrypt',folder:root,identity,ciphertext:encrypted,binary:mihomo});const provider=YAML.parse(native.plaintext);assert.equal(provider.proxies.length,5);pass('real Mihomo age decrypt accepts server ASCII armor and all five connection modes');
+  let controllerPort;const reservation=createServer();await new Promise(r=>reservation.listen(0,'127.0.0.1',r));controllerPort=reservation.address().port;await new Promise(r=>reservation.close(r));
+  const controller=`http://127.0.0.1:${controllerPort}`,controllerSecret='e2e-controller-'+randomUUID();
+  const mihomoConfig={'mixed-port':0,'allow-lan':false,mode:'rule','log-level':'info','external-controller':`127.0.0.1:${controllerPort}`,secret:controllerSecret,'proxy-providers':{xray:{type:'http',url:d.url,path:'./providers/xray.yaml',interval:3600,proxy:'DIRECT','age-secret-key':identity,header:{Authorization:[`Bearer ${d.token}`]},'health-check':{enable:false}}},'proxy-groups':[{name:'TEST',type:'select',use:['xray']}],rules:['MATCH,DIRECT']};
+  await linux.call({action:'mihomo-start',folder:root+'/mihomo',binary:mihomo,yaml:YAML.stringify(mihomoConfig)});
+  let info;for(let i=0;i<30;i++){await new Promise(r=>setTimeout(r,250));info=await linux.call({action:'http',url:controller+'/providers/proxies/xray',headers:{Authorization:`Bearer ${controllerSecret}`}});if(info.status===200&&JSON.parse(info.body).proxies?.length===5)break;}
+  if(info.status!==200)throw Error(JSON.stringify(await linux.call({action:'read-log',folder:root+'/mihomo'})));
+  assert.equal(JSON.parse(info.body).proxies.length,5,JSON.stringify(await linux.call({action:'read-log',folder:root+'/mihomo'})));pass('running Mihomo fetches HTTP Bearer provider, decrypts, and loads five real proxy adapters');
+  let b=clone((await node()).draft),settings=readSettings(b);settings.path='/panel/updated';settings.sni4='example.net';const n=await node();let save=await sys.call(`/nodes/${n.id}/draft`,'PUT',{revision:n.revision,settings});assert.equal(save.status,200,JSON.stringify(save.body));let queued=await sys.call(`/nodes/${n.id}/deploy`,'POST',{revision:save.body.revision});await once();assert.equal((await jobs()).find(j=>j.id===queued.body.id).status,'succeeded');
+  await linux.call({action:'http',url:controller+'/providers/proxies/xray',method:'PUT',headers:{Authorization:`Bearer ${controllerSecret}`}});
+  info=await linux.call({action:'http',url:controller+'/providers/proxies/xray',headers:{Authorization:`Bearer ${controllerSecret}`}});assert.equal(JSON.parse(info.body).proxies.length,5);const currentSub=await(await fetch(d.url,{headers:{Authorization:`Bearer ${d.token}`}})).text(),dec=new age.Decrypter();dec.addIdentity(identity);assert.ok((await dec.decrypt(age.armor.decode(currentSub),'text')).includes('/panel/updated'));pass('Web parameter change -> Agent deployment -> live Mihomo provider refresh');
+  const stable=await node(),stableHash=hashBundle(stable.observed);b=clone(stable.draft);b.files['conf/VLESS-443.json'].inbounds[0].protocol='not-a-real-protocol';const failed=await saveDeploy(b);assert.equal(failed.status,'failed');assert.equal(hashBundle((await node()).observed),stableHash);assert.equal(hashBundle((await node()).applied),hashBundle(stable.applied));pass('real Xray parser rejects invalid configuration; VPS and published version remain unchanged');
+  b=clone(stable.draft);b.files['config.json'].log.loglevel='debug';await linux.call({action:'fail',root,kind:'restart'});const restartFailed=await saveDeploy(b);assert.equal(restartFailed.status,'failed',restartFailed.output);assert.equal(hashBundle((await node()).observed),stableHash);assert.equal((await node()).report.active,true);pass('injected restart failure rolls back files and restores the previous running service');
+  b=clone(stable.draft);b.files['config.json'].log.loglevel='error';await linux.call({action:'fail',root,kind:'firewall'});const firewallFailed=await saveDeploy(b);assert.equal(firewallFailed.status,'failed',firewallFailed.output);assert.equal(hashBundle((await node()).observed),stableHash);pass('injected firewall failure restores the previous file set');
+  // Use a real matching Xray vlessenc pair for landing + multi-landing failover validation.
+  const pair=await linux.call({action:'vlessenc',core});
+  const lc=(await sys.call('/nodes','POST',{name:'集成测试落地',ipv4:'127.0.0.2'})).body;config2={nodeId:lc.node.id,token:lc.agentToken,url:sys.urls[2],allowLoopbackHttp:true};let landing=fixtureBundle();delete landing.files['conf/VLESS-443.json'];await linux.call({action:'init',root:secondRoot,bundle:landing,core});await linux.call({action:'once',root:secondRoot,config:config2});
+  const relay={role:'landing',transport_uuid:randomUUID(),...pair,listen_port:24443,external_port:34443,landing_ip:'127.0.0.2',peer_ip:'127.0.0.1'};
+  save=await sys.call(`/nodes/${lc.node.id}/draft`,'PUT',{revision:1,relay});assert.equal(save.status,200,JSON.stringify(save.body));queued=await sys.call(`/nodes/${lc.node.id}/deploy`,'POST',{revision:save.body.revision});await linux.call({action:'once',root:secondRoot,config:config2});let job=(await sys.call('/jobs')).body.find(j=>j.id===queued.body.id);assert.equal(job.status,'succeeded',job.output);pass('pure landing NAT configuration and VLESS encryption validate using the real core');
+  const line={role:'line',landings:['1','2'].map(id=>({id,name:'落地 '+id,landing_ip:'127.0.0.2',landing_port:34443,transport_uuid:relay.transport_uuid,encryption:pair.encryption,client_uuid:randomUUID()})),failover:{enabled:true,interval:'60s',order:['2','1']}};
+  let current=await node();save=await sys.call(`/nodes/${config.nodeId}/draft`,'PUT',{revision:current.revision,bundle:stable.draft,relay:line,customRules:[{type:'field',domain:['domain:kimi.ai'],outboundTag:'direct'}]});assert.equal(save.status,200,JSON.stringify(save.body));queued=await sys.call(`/nodes/${config.nodeId}/deploy`,'POST',{revision:save.body.revision});await once();job=(await jobs()).find(j=>j.id===queued.body.id);assert.equal(job.status,'succeeded',job.output);pass('multi-landing relay, reversed failover order and custom routing pass real Xray validation');
+  await sys.call(`/devices/${d.device.id}`,'PUT',{name:'集成测试笔记本',publicKey,grants:[{nodeId:config.nodeId,routes:['direct','1','2'],modes:['split','vision4']}]});await once();job=(await jobs())[0];assert.equal(job.status,'succeeded',job.output);const content=await(await fetch(d.url,{headers:{Authorization:`Bearer ${d.token}`}})).text(),proxies=YAML.parse(await dec.decrypt(age.armor.decode(content),'text')).proxies;assert.equal(proxies.length,6);assert.equal(new Set(proxies.map(p=>p.uuid)).size,3);pass('device-scoped direct and landing permissions yield three distinct server-accepted UUIDs');
+  current=await node();await sys.call(`/nodes/${config.nodeId}/deploy`,'POST',{revision:current.revision});await linux.call({action:'external-change',root});await once();job=(await jobs())[0];assert.equal(job.status,'failed');assert.match(job.output,/changed outside/);pass('concurrent out-of-panel change is rejected inside the script operation lock');
+  const rotated=(await sys.call(`/devices/${d.device.id}/rotate`,'POST',{rotateUuid:false})).body;assert.equal((await fetch(d.url,{headers:{Authorization:`Bearer ${d.token}`}})).status,401);assert.equal((await fetch(d.url,{headers:{Authorization:`Bearer ${rotated.token}`}})).status,200);pass('rotating subscription token immediately rejects the previous credential');
+  await sys.call(`/devices/${d.device.id}/revoke`,'POST',{});assert.equal((await fetch(d.url,{headers:{Authorization:`Bearer ${rotated.token}`}})).status,401);await once();current=await node();assert.ok(!JSON.stringify(current.observed).includes(`panel-${d.device.id}`));assert.equal(current.observed.files['config.json'].log.loglevel,'error');assert.equal((await sys.call(`/nodes/${config.nodeId}/deploy`,'POST',{revision:current.revision})).status,409);pass('revocation removes UUIDs while preserving external edits and requiring explicit re-import');
+  writeFileSync(path.join(sys.dir,'result.json'),JSON.stringify({passed:assertions,core:init.version,mihomo:'v1.19.32',finishedAt:new Date().toISOString()},null,2));
+  console.log(`E2E ${assertions}/${assertions} passed. Isolated artifacts: ${sys.dir}`);
+}finally{await linux.close();await sys.close();}

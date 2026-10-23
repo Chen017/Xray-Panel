@@ -1,0 +1,12 @@
+node_modules/
+dist/
+release/
+.upstream/
+.env
+.env.*
+!.env.example
+data/
+.local/
+test-results/
+__pycache__/
+*.pyc

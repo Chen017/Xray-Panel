@@ -1,0 +1,19 @@
+[Unit]
+Description=Xray Panel outbound management agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/xray-panel
+ExecStart=/usr/bin/python3 /opt/xray-panel/agent/agent.py --config /etc/xray-panel-agent/config.json
+Restart=always
+RestartSec=5
+UMask=0077
+PrivateTmp=true
+# Xray administration requires service, firewall and update privileges.
+# Do not add a network listener or an arbitrary shell command endpoint.
+
+[Install]
+WantedBy=multi-user.target

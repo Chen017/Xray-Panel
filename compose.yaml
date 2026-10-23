@@ -1,0 +1,27 @@
+services:
+  panel:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PANEL_HOST: 0.0.0.0
+      PANEL_DB: /app/data/panel.sqlite
+    ports:
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:3001:3001"
+      - "127.0.0.1:3002:3002"
+    volumes:
+      - panel-data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "Promise.all([3000,3001,3002].map(p=>fetch('http://127.0.0.1:'+p+(p===3000?'/api/health':'/health')).then(r=>{if(!r.ok)throw Error()}))).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+volumes:
+  panel-data:

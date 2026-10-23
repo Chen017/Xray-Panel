@@ -1,0 +1,11 @@
+import { spawnSync } from 'node:child_process';
+import { mkdirSync,readFileSync,writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { releaseFiles } from './package-files.mjs';
+mkdirSync('release',{recursive:true});
+const version=JSON.parse(readFileSync('package.json','utf8')).version;
+const file=`release/xray-panel-${version}.tar.gz`;
+const result=spawnSync('tar',['-czf',file,'--null','-T','-'],{input:releaseFiles().join('\0')+'\0',stdio:['pipe','inherit','inherit']});
+if(result.status!==0)process.exit(result.status??1);
+const digest=createHash('sha256').update(readFileSync(file)).digest('hex');writeFileSync(file+'.sha256',`${digest}  xray-panel-${version}.tar.gz\n`);
+console.log(`部署包：${file}\nSHA256：${digest}`);
