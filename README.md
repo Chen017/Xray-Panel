@@ -64,13 +64,15 @@ cd /opt/xray-panel
 
 ## 接入每台 VPS
 
-1. 面板「添加节点」，填写客户端直连该 VPS 的 IP / 域名；复制仅显示一次的 Agent JSON。
-2. 在该 VPS 通过 `git clone https://github.com/Chen017/Xray-Panel.git /opt/xray-panel` 拉取项目；已存在仓库时使用 `git pull --ff-only`。不复制建站 VPS 的 `.env` 或数据库。
-3. 创建 `/etc/xray-panel-agent/config.json`，粘贴专属 JSON；如果 Agent 域名启用了 Cloudflare Service Auth，再添加该 VPS 的 CF-Access-Client-Id / CF-Access-Client-Secret。
-4. `chmod 600 /etc/xray-panel-agent/config.json`。
-5. `cd /opt/xray-panel && sudo bash deploy/install-agent.sh`。
-6. 等待面板显示 Agent 在线，打开「管理」检查自动导入的脚本配置。现有 Xray 不会因 Agent 接入而停止或改变配置。
+1. 面板「添加节点」，填写客户端直连该 VPS 的 IP / 域名。
+2. 在弹出的「安装 VPS Agent」中，填入该 VPS 的 Cloudflare Client ID / Secret（Agent 入口启用 Service Auth 时必须填写）。这些字段只用于浏览器本地生成脚本，不提交给面板保存。
+3. 点击「下载专属安装脚本」，将 `xray-agent-install.sh` 放到目标 VPS，执行 `sudo bash xray-agent-install.sh`。也可复制完整脚本，在目标 VPS 的 root Bash 终端执行。
+4. 脚本自动下载固定提交的 Agent、安装缺少的依赖（Debian / Ubuntu）、写入权限为 600 的配置、安装并启动 systemd 服务。其他系统请先安装 curl、tar、Python >= 3.10、jq、util-linux 和 CA 证书。无需 Git、Node.js 或 Docker。
+5. 等待面板显示 Agent 在线，打开「管理」检查自动导入的脚本配置。接入 Agent 不会重新安装 Xray 或改变其现有配置。安装脚本含节点凭据，请勿分享，使用后删除；已有 Agent 配置会先备份。
+6. 需要手动安装时，弹窗「高级：原始配置」仍提供 Agent JSON，安装入口为仓库内 `deploy/install-agent.sh`。
 7. 未安装 Xray 的 VPS：在「运维」选择安装；需要输入节点名确认。纯落地环境先安装不监听中继，随后在互联页配置并部署。
+
+面板没有目标 VPS 的登录权限，因此首次需要在每台 VPS 执行一次脚本；接入后日常管理与配置部署均从面板完成。脚本是否启动成功与是否能通过 Cloudflare 认证是两件事；在线状态以面板心跳为准。
 
 服务检查：
 
