@@ -1,7 +1,8 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import metadata from '../package.json' with {type:'json'};
 
-const repo='https://github.com/Chen017/Xray-Panel/blob/codex/initial-panel/';
+const repo=`https://github.com/Chen017/Xray-Panel/blob/v${metadata.version}/`;
 export function Markdown({source,document='README.md'}:{source:string;document?:string}) {
   return <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{
     a:({href,children})=>{

@@ -1,6 +1,6 @@
 # 本地验证记录
 
-日期：2026-10-23（Asia/Singapore）。
+日期：2026-10-24（Asia/Singapore），含此前 v1.1.0 验证记录。
 
 环境：Windows + Node.js v24.13.0；WSL Debian + Python 3；真实 Linux Xray v26.3.27、Mihomo v1.19.32；浏览器实测使用本地隔离测试实例。
 
@@ -68,9 +68,9 @@ Agent 本轮以部署目标 Linux 环境为准，15 项全部执行，无跳过�
 
 真实 Xray 核心承担配置校验；服务状态和防火墙在隔离测试目录内通过受控驱动模拟，成功路径及失败回滚均有执行。真实 Mihomo 进程完成了订阅拉取、age 解密、代理 adapter 载入和刷新。
 
-没有修改用户现有 VPS、系统服务或防火墙，没有执行真实卸载、在线核心升级、系统 BBR 修改，也没有验证跨公网线路的代理吞吐 / 连通性。这些运维入口复用安装 VPS 上现有脚本的实现。
+上述最初本地测试没有修改用户现有 VPS、系统服务或防火墙，没有执行真实卸载、在线核心升级、系统 BBR 修改，也没有验证跨公网线路的代理吞吐 / 连通性。这些运维入口复用安装 VPS 上现有脚本的实现。
 
-本机没有 Docker Engine；未执行镜像构建、1Panel 部署或 Cloudflare 账号侧配置。已提供 Dockerfile、Compose、Agent systemd 服务和具体 Cloudflare 配置步骤。上线后仍需按文档核对域名、Access Service Auth、实际公网 IP / IPv6、NAT 端口和 VPS 服务权限。
+本机没有 Docker Engine。后续 v1.1.0 的 amd64/arm64 镜像已由 GitHub Actions 构建，验证匿名读取镜像清单后，在用户授权的建站 VPS 完成升级：沿用原 Compose 项目和数据卷，健康检查通过，原节点与设备保留、Agent 在线且 Xray 运行。没有对其他 Xray VPS 执行升级或部署。本轮没有更改 Cloudflare 或网站证书。
 
 ## v1.1.0 生命周期与界面回归
 
@@ -82,3 +82,14 @@ Agent 本轮以部署目标 Linux 环境为准，15 项全部执行，无跳过�
 - 发布包解压后的页面、JS/CSS、登录、文档、源码下载启动测试通过。真实 Xray/Mihomo E2E 14/14 通过。
 
 生命周期测试模拟 systemd 与 Docker 故障，不在生产环境执行卸载或清除数据测试。Cloudflare 和既有节点运行配置不由本轮本地测试修改。
+
+## v1.2.0 Telegram 告警验证
+
+- Node 回归 52 项，包含 Telegram HTTPS 报文、本地服务端鉴权/CSRF、加密不回显、双测点门槛、境外对照、过期/重放/目标变化、告警去重、恢复、发送中恢复、限流退避与重启重试。
+- Linux Agent 20 项，新增真实本地 TLS 1.3 + h2 握手、无效证书拒绝、超时、私网 DNS 拒绝、探测计划只读执行与下一心跳回传。
+- 生命周期 7 项及真实 Xray/Mihomo E2E 14 项通过。前端构建、解压发布包的页面/登录/指南/源码下载通过。
+- 本地浏览器验证 Telegram 设置页、已保存 Token 不回显、留空保存、模拟发送回执提示。模拟接收端仅属于隔离测试；未调用真实 Bot 发送消息。
+
+真实 Bot/Chat 收信与真实国内测点需要用户条件，留待人工验收，未标记为已通过。详情见 [telegram.md](telegram.md)。Telegram 版本不部署到用户 1Panel；线上保持 v1.1.0。
+
+- 本地还以明确无效凭据只读调用真实 Telegram `getMe`，TLS 校验通过并收到标准 HTTP 401 / JSON `ok:false`。这只验证开发环境到 Telegram 的连通性，不等于真实 Bot 发送成功，也不代表未部署版本的 VPS 已验证收信。

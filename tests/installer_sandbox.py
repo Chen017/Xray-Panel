@@ -31,11 +31,13 @@ esac''',
     result=subprocess.run(['bash'],input=script,text=True,capture_output=True,env=env,timeout=30)
     assert result.returncode==0,result.stdout+result.stderr
     assert 'parent-alive' in result.stdout
+    assert (root/'received').exists(),result.stdout+result.stderr
     assert (root/'received').read_text()==data['enrollment']
     assert 'ca-certificates' in (root/'apt.log').read_text()
     assert data['secret'] not in result.stdout+result.stderr
     # Repeat installation preserves the manager and still delivers credentials once.
     result=subprocess.run(['bash'],input=script,text=True,capture_output=True,env=env,timeout=30)
     assert result.returncode==0,result.stdout+result.stderr
+    assert (root/'received').exists(),result.stdout+result.stderr
     assert (root/'received').read_text()==data['enrollment']
 print('bootstrap shell checks passed')

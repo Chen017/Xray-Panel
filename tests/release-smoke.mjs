@@ -23,7 +23,7 @@ try{
  const response=await fetch(origins[0]+'/');assert.ok(response.ok,'Packaged homepage');const html=await response.text();assert.ok(html.includes('Xray Panel'));
  const resources=[...html.matchAll(/(?:src|href)="(\/assets\/[^\"]+)"/g)].map(m=>m[1]);assert.ok(resources.length>=2);for(const resource of resources)assert.ok((await fetch(origins[0]+resource)).ok,'Packaged asset '+resource);
  const login=await fetch(origins[0]+'/api/login',{method:'POST',headers:{Origin:origins[0],'Content-Type':'application/json'},body:JSON.stringify({password:config.password})});assert.ok(login.ok,'Packaged login');const cookie=login.headers.get('set-cookie').split(';')[0];
- const docs=await fetch(origins[0]+'/api/docs',{headers:{Cookie:cookie}});const guide=await docs.json();assert.ok(docs.ok&&guide.cloudflare.includes('Service Auth')&&guide.mihomo.includes('age-secret-key'),'Packaged guides');
+ const docs=await fetch(origins[0]+'/api/docs',{headers:{Cookie:cookie}});const guide=await docs.json();assert.ok(docs.ok&&guide.cloudflare.includes('Service Auth')&&guide.mihomo.includes('age-secret-key')&&guide.telegram.includes('国内'),'Packaged guides');
  for(const origin of origins.slice(0,2)){const source=await fetch(origin+'/source.tar.gz');assert.ok(source.ok,'Source download under a hidden parent directory');assert.ok(source.headers.get('content-disposition').includes('source'));assert.ok((await source.arrayBuffer()).byteLength>10000);}
  console.log('PASS release checksum, safe file list and absence of runtime credentials');
  console.log('PASS extracted runtime: homepage, JS/CSS assets, login, guides and source download on both entries');

@@ -24,6 +24,9 @@ HERE = Path(__file__).resolve().parent
 _report_spec = importlib.util.spec_from_file_location('xray_system_report', HERE / 'system_report.py')
 system_report = importlib.util.module_from_spec(_report_spec)
 _report_spec.loader.exec_module(system_report)
+_probe_spec = importlib.util.spec_from_file_location('xray_probes', HERE / 'probes.py')
+probes = importlib.util.module_from_spec(_probe_spec)
+_probe_spec.loader.exec_module(probes)
 ROOT_FILES = {'config.json', 'relay.json', 'custom_rules.json', 'firewall_ports.json'}
 SAFE_CONF = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,100}\.json\Z')
 ACTIONS = {'deploy', 'inspect', 'detect-addresses', 'firewall-status', 'validate', 'dump', 'logs', 'start', 'stop', 'restart', 'enable', 'disable', 'update-core', 'update-script', 'update-geodata', 'maintenance', 'bbr', 'diagnostics', 'relay-test', 'relay-keygen', 'uninstall', 'install-standard', 'install-landing'}
@@ -205,7 +208,7 @@ class Agent:
             except (OSError, ValueError): bundle = None
             self.cached_firewall = system_report.firewall(bundle)
             self.firewall_at = now
-        return {'installed': installed, 'version': version, 'scriptVersion': script_version, 'active': status.strip() == 'active', 'hostname': socket.gethostname(), 'listen4': listen4, 'agentVersion': json.loads((HERE.parent / 'package.json').read_text())['version'], 'platform': sys.platform, 'network': self.cached_network, 'firewall': self.cached_firewall}
+        return {'installed': installed, 'version': version, 'scriptVersion': script_version, 'active': status.strip() == 'active', 'hostname': socket.gethostname(), 'listen4': listen4, 'agentVersion': json.loads((HERE.parent / 'package.json').read_text())['version'], 'monitorProtocol': 1, 'monitor': getattr(self, 'monitor_result', None), 'platform': sys.platform, 'network': self.cached_network, 'firewall': self.cached_firewall}
 
     def snapshot(self):
         """A damaged configuration must not disconnect the management channel."""
@@ -307,6 +310,8 @@ class Agent:
             result = self.execute(job)
             self.request('/v1/agent/jobs/' + job['id'] + '/result', {**result, 'lease': job['lease']})
             print('job', job['id'], 'succeeded' if result['ok'] else 'failed', flush=True)
+        if response.get('monitorPlan'):
+            self.monitor_result = probes.run_plan(response['monitorPlan'])
 
     def run(self):
         while True:

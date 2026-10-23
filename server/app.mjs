@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import * as age from 'age-encryption';
 import YAML from 'yaml';
+import {createMonitoring} from './monitoring.mjs';
 import { Store,token,digest,passwordHash,passwordVerify } from './store.mjs';
 import {addressPolicy,effectiveAddress,observeAddresses,resolveLinkedAddresses,linkedTargetHash} from '../shared/addresses.mjs';
 import { validateBundle,hashBundle,compileDevices,providerProxies,providerLinks,readSettings,patchSettings,patchRouting,keypair,hostSchema,newBundle,settingsSchema,clone } from '../shared/config.mjs';
@@ -27,6 +28,7 @@ const MAX_BACKUP_RECORDS=100000;
 
 export function createSystem(config) {
   const store=new Store(config.dbPath,config.masterKey);
+  const monitoring=createMonitoring(store,{fetchImpl:config.monitorFetch,clock:config.monitorClock});
   if(!store.get('system','admin')){
     if((config.password??'').length<16)throw Error('首次启动需要至少 16 字符的 PANEL_ADMIN_PASSWORD');
     store.put('system','admin',{hash:passwordHash(config.password)});
@@ -80,10 +82,13 @@ export function createSystem(config) {
   admin.get('/api/session',(req,res)=>res.json({csrf:req.session.csrf,subscriptionOrigin:config.subscriptionOrigin,agentOrigin:config.agentOrigin}));
   admin.post('/api/logout',(req,res)=>{store.remove('session',req.session.hash);res.clearCookie('xray_session',{path:'/'});res.json({ok:true});});
   admin.post('/api/password',(req,res)=>{const p=z.object({current:z.string().max(256),password:z.string().min(16).max(256)}).parse(req.body);if(!passwordVerify(p.current,store.get('system','admin').hash))throw error('当前密码错误',403);store.tx(()=>{store.put('system','admin',{hash:passwordHash(p.password)});for(const s of store.db.prepare("SELECT id FROM records WHERE kind='session'").all())store.remove('session',s.id);});store.audit('password.changed','admin');res.clearCookie('xray_session',{path:'/'});res.json({ok:true});});
+  admin.get('/api/monitoring',(_,res)=>res.json(monitoring.status()));
+  admin.put('/api/monitoring',(req,res)=>{try{res.json(monitoring.save(req.body));}catch(e){if(e instanceof z.ZodError)throw e;throw error(e.message);}});
+  admin.post('/api/monitoring/test',async(req,res)=>{try{res.json(await monitoring.test());}catch(e){throw error(e.message);}});
   admin.get('/api/nodes',(_,res)=>res.json(store.list('node').map(publicNode)));
   admin.post('/api/nodes',(req,res)=>{const value=nodeSchema.parse(req.body),secret=token(),n={id:randomUUID(),...value,addressPolicy:value.addressPolicy??Object.fromEntries(['ipv4','ipv6'].map(key=>[key,{mode:value[key]?'manual':'auto',value:value[key]}])),agentHash:digest(secret),revision:0,createdAt:now(),needsSync:false};store.put('node',n.id,n);store.audit('node.created',n.id);res.status(201).json({node:publicNode(n),agentToken:secret,agentUrl:config.agentOrigin});});
   admin.patch('/api/nodes/:id',(req,res)=>{const n=getNode(req.params.id),patch=nodeSchema.partial().parse(req.body);n.addressPolicy=addressPolicy(n);for(const key of ['ipv4','ipv6'])if(patch[key]!==undefined&&!patch.addressPolicy)n.addressPolicy[key]={mode:'manual',value:patch[key]};Object.assign(n,patch);for(const key of ['ipv4','ipv6'])n[key]=effectiveAddress(n,key);store.put('node',n.id,n);refreshLinks();store.audit('node.updated',n.id);res.json(publicNode(n));});
-  admin.delete('/api/nodes/:id',(req,res)=>{const n=getNode(req.params.id);if(busy(n.id))throw error('请先完成或取消节点任务',409);store.remove('node',n.id);for(const d of store.list('device')){d.grants=d.grants.filter(g=>g.nodeId!==n.id);store.put('device',d.id,d);}store.audit('node.deleted',n.id);res.json({ok:true});});
+  admin.delete('/api/nodes/:id',(req,res)=>{const n=getNode(req.params.id);if(busy(n.id))throw error('请先完成或取消节点任务',409);store.remove('node',n.id);const mc=monitoring.settings();if([...mc.cnProbeIds,...mc.globalProbeIds].includes(n.id))monitoring.save({...mc,cnProbeIds:mc.cnProbeIds.filter(id=>!!store.get('node',id)),globalProbeIds:mc.globalProbeIds.filter(id=>!!store.get('node',id))});for(const d of store.list('device')){d.grants=d.grants.filter(g=>g.nodeId!==n.id);store.put('device',d.id,d);}store.audit('node.deleted',n.id);res.json({ok:true});});
   admin.post('/api/nodes/:id/agent-token',(req,res)=>{const n=getNode(req.params.id),secret=token();n.agentHash=digest(secret);store.put('node',n.id,n);store.audit('agent.rotated',n.id);res.json({agentToken:secret,nodeId:n.id,agentUrl:config.agentOrigin});});
   admin.post('/api/keys',(_,res)=>res.json({...keypair(),uuid:randomUUID(),shortIds:[randomBytes(4).toString('hex'),randomBytes(8).toString('hex')]}));
   admin.put('/api/nodes/:id/draft',(req,res)=>{const n=getNode(req.params.id),input=z.object({revision:z.number().int(),bundle:z.any().optional(),settings:settingsSchema.optional(),customRules:z.any().optional(),relay:z.any().optional(),firewall:z.object({open:z.array(z.number().int().min(1).max(65535)),closed:z.array(z.number().int().min(1).max(65535))}).optional(),initialize:z.boolean().optional()}).parse(req.body);if(input.revision!==n.revision)throw error('配置已被另一页面修改，请重新载入',409);
@@ -111,8 +116,8 @@ export function createSystem(config) {
   admin.get('/api/devices/:id/links',(req,res)=>{const d=getDevice(req.params.id);const links=d.revoked?[]:store.list('node').filter(n=>n.enabled&&n.applied).flatMap(n=>providerLinks(n,n.applied,d,config.masterKey));res.type('text/plain').send(links.join('\n'));});
   admin.get('/api/audit',(_,res)=>res.json(store.audits()));
   admin.get('/api/backup',(_,res)=>{const backup={version:1,createdAt:now(),records:store.db.prepare('SELECT kind,id,data FROM records WHERE kind != ?').all('session')},serialized=JSON.stringify(backup);if(backup.records.length>MAX_BACKUP_RECORDS||Buffer.byteLength(serialized)>MAX_BACKUP_BYTES)throw error('备份超过 64 MiB 或 100,000 条记录，请先归档历史任务后导出',413);store.audit('backup.exported','system');res.attachment('xray-panel-encrypted-backup.json').type('application/json').send(serialized);});
-  admin.post('/api/restore',express.json({limit:MAX_BACKUP_BYTES,strict:true}),(req,res)=>{const backup=z.object({version:z.literal(1),records:z.array(z.object({kind:z.enum(['system','node','device','job']),id:z.string(),data:z.string()})).max(MAX_BACKUP_RECORDS)}).parse(req.body);if(!backup.records.some(r=>r.kind==='system'&&r.id==='admin'))throw error('备份缺少管理员记录');for(const r of backup.records)store.open(r.data);store.tx(()=>{store.db.exec('DELETE FROM records');const q=store.db.prepare('INSERT INTO records(kind,id,data) VALUES(?,?,?)');for(const r of backup.records)q.run(r.kind,r.id,r.data);});store.audit('backup.restored','system');res.json({ok:true});});
-  admin.get('/api/docs',(_,res)=>res.json({readme:readFileSync(path.join(root,'README.md'),'utf8'),cloudflare:readFileSync(path.join(root,'docs/cloudflare.md'),'utf8'),mihomo:readFileSync(path.join(root,'docs/mihomo.md'),'utf8')}));
+  admin.post('/api/restore',express.json({limit:MAX_BACKUP_BYTES,strict:true}),(req,res)=>{const backup=z.object({version:z.literal(1),records:z.array(z.object({kind:z.enum(['system','node','device','job','monitor','notification']),id:z.string(),data:z.string()})).max(MAX_BACKUP_RECORDS)}).parse(req.body);if(!backup.records.some(r=>r.kind==='system'&&r.id==='admin'))throw error('备份缺少管理员记录');for(const r of backup.records)store.open(r.data);store.tx(()=>{store.db.exec('DELETE FROM records');const q=store.db.prepare('INSERT INTO records(kind,id,data) VALUES(?,?,?)');for(const r of backup.records)q.run(r.kind,r.id,r.data);});store.audit('backup.restored','system');res.json({ok:true});});
+  admin.get('/api/docs',(_,res)=>res.json({readme:readFileSync(path.join(root,'README.md'),'utf8'),cloudflare:readFileSync(path.join(root,'docs/cloudflare.md'),'utf8'),mihomo:readFileSync(path.join(root,'docs/mihomo.md'),'utf8'),telegram:readFileSync(path.join(root,'docs/telegram.md'),'utf8')}));
   admin.get('/source.tar.gz',(_,res)=>{const p=path.join(root,'dist/source.tar.gz');if(!existsSync(p))throw error('请运行 npm run build 生成源码归档',404);res.download('source.tar.gz','xray-panel-source.tar.gz',{root:path.join(root,'dist')});});
   if(existsSync(path.join(root,'dist/index.html'))){admin.use(express.static(path.join(root,'dist'),{index:'index.html'}));admin.get('/{*splat}',(_,res)=>res.sendFile(path.join(root,'dist/index.html')));}
   const bearer=req=>{const value=req.get('authorization')??'';return /^Bearer [A-Za-z0-9_-]{43}$/.test(value)?value.slice(7):'';};
@@ -134,13 +139,13 @@ export function createSystem(config) {
   agent.post('/v1/agent/poll',(req,res)=>store.tx(()=>{
     const n=getNode(req.node.id),input=z.object({report:z.record(z.unknown()),bundle:z.any().optional()}).parse(req.body);n.report=input.report;n.lastSeen=now();observeAddresses(n,input.report.network);
     if(input.bundle){n.observed=validateBundle(input.bundle);n.observedHash=hashBundle(n.observed);if(!n.draft){n.draft=clone(n.observed);n.draftBaseHash=n.observedHash;n.revision++;}}
-    store.put('node',n.id,n);refreshLinks();Object.assign(n,store.get('node',n.id));
+    store.put('node',n.id,n);monitoring.accept(n,input.report.monitor);refreshLinks();Object.assign(n,store.get('node',n.id));
     if((n.needsSync||n.needsRelaySync)&&!busy(n.id)&&n.observed&&input.bundle&&!n.report.configError&&!n.relaySyncError&&(n.syncRetryAt??0)<=Date.now())deploy(n,n.observed,n.needsSync?'device-sync':'address-sync');
     let job=busy(n.id);
     if(job?.status==='running'&&job.leaseUntil>Date.now())job=null;
     if(job?.action==='deploy'&&job.status==='queued'&&n.report.configError)job=null;
-    if(job){const lease=token();job.leaseHash=digest(lease);job.leaseObservedHash=n.observedHash??null;job.leaseUntil=Date.now()+15*60000;job.status='running';job.startedAt??=now();job.attempts++;store.put('job',job.id,job);const {leaseHash,...safe}=job;return res.json({job:{...safe,lease}});}
-    res.json({job:null});
+    if(job){const lease=token();job.leaseHash=digest(lease);job.leaseObservedHash=n.observedHash??null;job.leaseUntil=Date.now()+15*60000;job.status='running';job.startedAt??=now();job.attempts++;store.put('job',job.id,job);const {leaseHash,...safe}=job;return res.json({job:{...safe,lease},monitorPlan:monitoring.plan(n)});}
+    res.json({job:null,monitorPlan:monitoring.plan(n)});
   }));
   agent.post('/v1/agent/jobs/:id/result',(req,res)=>store.tx(()=>{
     const j=store.get('job',req.params.id),input=z.object({lease:z.string(),ok:z.boolean(),output:z.string().max(180000).default(''),bundle:z.any().optional(),report:z.record(z.unknown()).optional()}).parse(req.body);
@@ -163,5 +168,5 @@ export function createSystem(config) {
     if(ok&&j.action==='deploy'&&(j.payload.relayRevision??0)===(n.relayRevision??0))n.needsRelaySync=false;store.put('node',n.id,n);refreshLinks();store.put('job',j.id,j);store.audit(`job.${j.status}`,n.id,`${j.action} ${j.id}`);res.json({ok:true});
   }));
   finish(admin);finish(subscription);finish(agent);
-  return {admin,subscription,agent,store,config,queue,deploy};
+  return {admin,subscription,agent,store,config,queue,deploy,monitoring};
 }

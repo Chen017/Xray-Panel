@@ -130,6 +130,19 @@ class AgentSafetyTests(unittest.TestCase):
             self.assertTrue(replay['report']['configError'])
             self.assertEqual(command.call_count, 1)
 
+    def test_monitor_plan_runs_readonly_and_returns_on_next_heartbeat(self):
+        module.write_bundle(self.root,self.bundle)
+        agent=self.make_agent()
+        agent.report=lambda: {'installed':True,'monitorProtocol':1,'monitor':getattr(agent,'monitor_result',None)}
+        plan={'id':'fixture-plan','targets':[]}
+        result={'planId':'fixture-plan','results':[]}
+        with patch.object(agent,'request',side_effect=[{'job':None,'monitorPlan':plan},{'job':None}]) as request, patch.object(module.probes,'run_plan',return_value=result) as check:
+            agent.once()
+            agent.once()
+        check.assert_called_once_with(plan)
+        self.assertEqual(request.call_args_list[1].args[1]['report']['monitor'],result)
+        self.assertEqual(module.read_bundle(self.root),self.bundle)
+
     @unittest.skipIf(__import__('os').name == 'nt', 'Symlink creation requires Linux permissions')
     def test_symlink_rejected(self):
         target = self.root / 'outside.json'

@@ -20,6 +20,7 @@ workers = []
 # must never inspect the host firewall or depend on external networking.
 mod.system_report.addresses = lambda: {'checkedAt': '2026-01-01T00:00:00Z'}
 mod.system_report.firewall = lambda *args: {'status': 'unsupported', 'sources': []}
+mod.probes.run_plan = lambda plan: {'planId': plan['id'], 'results': []}
 
 
 def handle(msg):

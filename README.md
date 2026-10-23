@@ -39,7 +39,7 @@ npm start
 在建站 VPS 的 root 终端执行（不需要安装 Xray Script）：
 
 ```bash
-(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.1.0/deploy/bootstrap.sh -o "$w"; bash "$w")
+(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.2.0/deploy/bootstrap.sh -o "$w"; bash "$w")
 ```
 
 打开编号菜单，选择「安装 Panel」，输入管理、订阅、Agent 三个 HTTPS 域名。管理器自动生成密钥、初始密码和配置，拉取 GHCR 的对应版本镜像并启动；VPS 不构建前端，也不用手动上传源码。以后输入 `xray-panel` 重新打开菜单。
@@ -56,7 +56,7 @@ xray-panel panel uninstall
 
 管理器生成的编排位于 `/opt/xray-panel-manager/panel.compose.yaml`。已有 1Panel 编排只替换原编排内容，保留原名称；不要重复创建。配置路径见 `/opt/xray-panel-manager/panel.json`，初始新装默认 `.env` 为 `/opt/xray-panel/.env`，旧项目迁移使用 `/opt/xray-panel-manager/panel.env`。勿公开这些文件。
 
-安装要求 Debian / Ubuntu、systemd、Python >= 3.10；首次引导安装缺失依赖。镜像支持 Linux amd64 / arm64。**命令依赖对应版本 GitHub Release 和 GHCR 镜像已发布；发布工作流在测试和镜像上传成功后才创建 Release。** 指定版本可加 `--version 1.1.0`；未发布版本拉取失败不会替换正在运行的容器。
+安装要求 Debian / Ubuntu、systemd、Python >= 3.10；首次引导安装缺失依赖。镜像支持 Linux amd64 / arm64。**命令依赖对应版本 GitHub Release 和 GHCR 镜像已发布；发布工作流在测试和镜像上传成功后才创建 Release。** 指定版本可加 `--version 1.2.0`；未发布版本拉取失败不会替换正在运行的容器。
 
 三个 HTTPS 网站分别反向代理到本机 3000 / 3001 / 3002，`.env` 中三个 `ORIGIN` 填对应 HTTPS 域名，不带尾部 `/`。保留已配好的管理域名和证书，为订阅和 Agent 补齐各自站点与证书。
 
@@ -162,3 +162,7 @@ npm run test:release
 ## 源码与来源
 
 详见 THIRD_PARTY_NOTICES.md、docs/feature-coverage.md。前端页面底部提供源代码下载。此项目遵循所保留上游 AGPL-3.0-only 许可证；对外提供网络服务时也应保持相应源码可获取。
+
+## Telegram 告警（v1.2.0）
+
+在「安全与设置 → Telegram 与网络告警」配置 Bot、Chat ID 和测点。支持 SNI / TLS 检查、国内/境外 TCP 对照、连续失败确认、恢复通知、去重与发送重试。没有真实大陆测点时不判断国内封锁；详细原理、配置和待人工验收步骤见 [Telegram 告警指南](docs/telegram.md)。本版默认关闭，不会修改 Xray 或自动更换 IP / SNI。

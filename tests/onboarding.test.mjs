@@ -52,12 +52,12 @@ test('real Bash sandbox: paste isolation, CA bootstrap and stdin enrollment',()=
 test('guide renders headings, tables, code and safe links, discarding HTML',async()=>{
   mkdirSync('.local',{recursive:true});const dir=mkdtempSync(path.resolve('.local','markdown-test-'));
   try {
-  const compiled=ts.transpileModule(readFileSync('web/markdown.tsx','utf8'),{compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.ESNext}}).outputText;
+  const compiled=ts.transpileModule(readFileSync('web/markdown.tsx','utf8'),{compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.ESNext}}).outputText.replaceAll('../package.json',pathToFileURL(path.resolve('package.json')).href);
   const file=path.join(dir,'markdown.mjs');writeFileSync(file,compiled);
   const {Markdown}=await import(pathToFileURL(file));
   const html=renderToStaticMarkup(React.createElement(Markdown,{source:'# Title\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\n```bash\necho test\n```\n\n[guide](docs/mihomo.md)\n\n<script>alert(1)</script>\n\n[bad](javascript:alert(1))'}));
   assert.match(html,/<h1>Title<\/h1>/);assert.match(html,/<table>/);assert.match(html,/language-bash/);
-  assert.match(html,/github.com\/Chen017\/Xray-Panel\/blob\/codex\/initial-panel\/docs\/mihomo.md/);
+  assert.ok(html.includes(`github.com/Chen017/Xray-Panel/blob/${agentSourceRef}/docs/mihomo.md`));
   assert.doesNotMatch(html,/<script>|javascript:/);
   } finally { rmSync(dir,{recursive:true,force:true}); }
 });

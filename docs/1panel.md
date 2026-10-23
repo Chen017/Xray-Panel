@@ -28,14 +28,14 @@
 打开建站 VPS「终端」，使用 root 连接本机：
 
 ```bash
-(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.1.0/deploy/bootstrap.sh -o "$w"; bash "$w")
+(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.2.0/deploy/bootstrap.sh -o "$w"; bash "$w")
 ```
 
 进入编号菜单，选择「安装 Panel」。以后直接输入 `xray-panel`。不需要先装 Xray Script，也不需要上传源码或在 VPS 构建镜像。
 
 ## 第 2 步：按提示输入三个域名
 
-依次输入管理、订阅、Agent 的完整域名。例如 `xpanel.pisces.qzz.io`、`xsub.pisces.qzz.io`、`xagent.pisces.qzz.io`，请使用你自己的记录。管理器生成随机 master key、初始管理员密码、三个 HTTPS ORIGIN，然后拉取已发布的 GHCR 版本镜像（amd64 / arm64）。
+依次输入管理、订阅、Agent 的完整域名。例如 `panel.example.com`、`sub.example.com`、`agent.example.com`，请使用你自己的记录。管理器生成随机 master key、初始管理员密码、三个 HTTPS ORIGIN，然后拉取已发布的 GHCR 版本镜像（amd64 / arm64）。
 
 新安装配置为 `/opt/xray-panel/.env`，权限 600。使用 1Panel 文件管理器查看初始密码，安全保存 `PANEL_MASTER_KEY`，不要把配置上传 GitHub。旧项目迁移会从运行容器保留原密钥和配置，写入 `/opt/xray-panel-manager/panel.env`。实际路径记录在 `/opt/xray-panel-manager/panel.json`。
 
