@@ -34,11 +34,21 @@ npm start
 
 ## 1Panel / Docker 部署
 
-1. 将本项目上传至建站 VPS，例如 `/opt/xray-panel`。
-2. `cp .env.example .env`。使用 `openssl rand -hex 32` 生成 PANEL_MASTER_KEY，管理员密码使用长随机值。设置三个 HTTPS 域名，PANEL_SECURE_COOKIE=true，并执行 `chmod 600 .env`。
-3. 在 1Panel 的「容器 → 编排」使用本目录 compose.yaml，或执行 `docker compose up -d --build`。
-4. 按 docs/cloudflare.md 设置 Tunnel 和三个 Access 应用。compose 只将管理端口绑定到宿主机 127.0.0.1；不需要对公网开放 3000 / 3001 / 3002。
-5. .env 中的 PANEL_ADMIN_ORIGIN 必须是浏览器实际使用的协议和域名，不带尾部 `/`；否则登录或 CSRF 验证会失败。
+**域名、Cloudflare DNS / 代理、1Panel HTTPS 证书已经配置好：直接按 [1Panel 逐步部署教程](docs/1panel.md) 操作。教程从 GitHub 拉取代码开始，到浏览器打开登录页结束，无需手动上传项目，无需 Cloudflare Tunnel。**
+
+在 1Panel 的服务器终端拉取：
+
+```bash
+cd /opt
+git clone https://github.com/Chen017/Xray-Panel.git xray-panel
+cd /opt/xray-panel
+```
+
+创建 `.env` 后，在「容器 → 编排 → 创建 → 路径选择」使用 `/opt/xray-panel/deploy/1panel/docker-compose.yml`。该文件使用绝对路径，适用于 1Panel 导入；项目根目录的 `compose.yaml` 适用于在项目目录直接执行 Compose。
+
+随后把现有 HTTPS 网站的根路径反向代理到 `http://127.0.0.1:3000`，`.env` 中的 `PANEL_ADMIN_ORIGIN` 必须是浏览器实际使用的 HTTPS 域名，不带尾部 `/`。Cloudflare 现有 DNS 和 1Panel 证书不需要重配。
+
+如果希望使用 Cloudflare Tunnel + Access 的另一种接入方式，可单独参考 docs/cloudflare.md；它不是现有 HTTPS 网站反向代理方案的必需步骤。
 
 三个独立入口：
 
@@ -55,7 +65,7 @@ npm start
 ## 接入每台 VPS
 
 1. 面板「添加节点」，填写客户端直连该 VPS 的 IP / 域名；复制仅显示一次的 Agent JSON。
-2. 将 agent/、vendor/xray-script/ 和 deploy/ 上传至 VPS 的 `/opt/xray-panel/`。这些目录不包含建站 VPS 的 `.env` 或数据库。
+2. 在该 VPS 通过 `git clone https://github.com/Chen017/Xray-Panel.git /opt/xray-panel` 拉取项目；已存在仓库时使用 `git pull --ff-only`。不复制建站 VPS 的 `.env` 或数据库。
 3. 创建 `/etc/xray-panel-agent/config.json`，粘贴专属 JSON；如果 Agent 域名启用了 Cloudflare Service Auth，再添加该 VPS 的 CF-Access-Client-Id / CF-Access-Client-Secret。
 4. `chmod 600 /etc/xray-panel-agent/config.json`。
 5. `cd /opt/xray-panel && sudo bash deploy/install-agent.sh`。
