@@ -28,7 +28,7 @@
 打开建站 VPS「终端」，使用 root 连接本机：
 
 ```bash
-(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.2.0/deploy/bootstrap.sh -o "$w"; bash "$w")
+(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.3.0/deploy/bootstrap.sh -o "$w"; bash "$w")
 ```
 
 进入编号菜单，选择「安装 Panel」。以后直接输入 `xray-panel`。不需要先装 Xray Script，也不需要上传源码或在 VPS 构建镜像。

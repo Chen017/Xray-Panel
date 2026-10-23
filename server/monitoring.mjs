@@ -18,6 +18,7 @@ export async function sendTelegram(settings,text,fetchImpl=fetch){
     try{while(true){const {done,value}=await reader.read();if(done)break;bytes+=value.length;if(bytes>32768){await reader.cancel();return {ok:false,code:'invalid_response'};}chunks.push(Buffer.from(value));}}finally{reader.releaseLock();}
     data=JSON.parse(Buffer.concat(chunks).toString());
   }catch{return {ok:false,code:'network_or_invalid_response'};}
+  if(!data||typeof data!=='object'||Array.isArray(data))return {ok:false,code:'invalid_response'};
   if(response.ok&&data.ok===true&&Number.isSafeInteger(data.result?.message_id))return {ok:true,messageId:data.result.message_id};
   const status=response.status===200?Number(data.error_code):response.status;
   return {ok:false,code:`telegram_${Number.isInteger(status)?status:'invalid'}`,permanent:[400,401,403,404].includes(status),retryAfter:status===429?Math.max(1,Math.min(86400,Number(data.parameters?.retry_after)||60)):undefined};
@@ -93,7 +94,7 @@ export function createMonitoring(store,{clock=Date.now,fetchImpl=fetch}={}){
     for(const target of p.targets){
       // Reject old addresses/SNI after configuration edits, node removal or disablement.
       const still=targetsFor(current,cfg,store.list('node')).find(t=>t.id===target.id&&t.region===target.region);if(!still)continue;
-      const r=result.results.find(r=>r.id===target.id);if(!r||typeof r.ok!=='boolean')continue;
+      const r=result.results.find(r=>r?.id===target.id&&typeof r.ok==='boolean');if(!r)continue;
       let record=store.get('monitor',target.id)??{id:target.id,...target,active:false,samples:{}};
       if(record.signature!==p.signature){record={...record,signature:p.signature,samples:{},active:false,alertDelivered:false};}
       const previous=record.samples[probe.id];const adjacent=previous&&clock()-previous.at<=(previous.periodMs??cfg.interval*1000)*1.5;
@@ -109,7 +110,10 @@ export function createMonitoring(store,{clock=Date.now,fetchImpl=fetch}={}){
     const probe=record.kind==='sni'?store.get('node',record.nodeId):[...cfg.cnProbeIds,...cfg.globalProbeIds].map(id=>store.get('node',id)).find(Boolean);
     return !!probe&&targetsFor(probe,cfg,store.list('node')).some(t=>t.id===record.id);
   }
-  function status(){const cfg=settings();return {settings:publicSettings(),incidents:store.list('monitor').map(r=>({...r,current:targetCurrent(r,cfg),stale:r.signature!==configHash(cfg)||clock()-(r.updatedAt??0)>Math.max(cfg.interval*1000,...Object.values(r.samples??{}).map(s=>s.periodMs??0))*3})).sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0)).slice(0,200),notifications:store.list('notification').sort((a,b)=>b.createdAt-a.createdAt).slice(0,50).map(({text,destinationHash,...safe})=>safe),notice:cfg.cnProbeIds.filter(id=>store.get('node',id)).length<cfg.cnQuorum?'国内测点不足，无法形成疑似国内阻断告警；SNI 检查仍可独立工作。':'国内测点位置由管理员声明；对照结果只能提示疑似网络阻断，无法证明封锁原因。'};}
+  function status(){const cfg=settings();return {settings:publicSettings(),incidents:store.list('monitor').map(r=>{
+    const {verdict,samples}=assessment(r,cfg),stale=r.signature!==configHash(cfg)||!samples.length;
+    return {...r,current:targetCurrent(r,cfg),stale,assessment:stale||verdict===null?'insufficient':verdict?'alert':'reachable',evidence:samples.map(s=>({region:s.region,ok:s.ok,count:s.count,at:s.at}))};
+  }).sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0)).slice(0,200),notifications:store.list('notification').sort((a,b)=>b.createdAt-a.createdAt).slice(0,50).map(({text,destinationHash,...safe})=>safe),notice:cfg.cnProbeIds.filter(id=>store.get('node',id)).length<cfg.cnQuorum?'国内测点不足，无法形成疑似国内阻断告警；SNI 检查仍可独立工作。':'国内测点位置由管理员声明；对照结果只能提示疑似网络阻断，无法证明封锁原因。'};}
   async function test(){const cfg=settings();if(!cfg.botToken||!cfg.chatId)throw Error('请先保存 Bot Token 和 Chat ID');return sendTelegram(cfg,'Xray Panel 测试通知：Telegram 接口已收到此消息。',fetchImpl);}
   async function drain(){
     if(sending)return;sending=true;

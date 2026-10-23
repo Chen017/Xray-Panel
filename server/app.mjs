@@ -54,7 +54,15 @@ export function createSystem(config) {
   function refreshLinks(){
     const nodes=store.list('node');
     for(const n of nodes){
-      if(!n.observed?.files['relay.json']?.landings?.some(l=>l.nodeId))continue;
+      if(!n.observed?.files['relay.json']?.landings?.some(l=>l.nodeId)){
+        // A successful unlink (or an externally changed configuration) must not
+        // leave the old relay failure blocking unrelated device deployments.
+        if(n.needsRelaySync||n.relaySyncError||n.relayTargetHash){
+          n.needsRelaySync=false;delete n.relaySyncError;delete n.relayTargetHash;
+          n.relayRevision=(n.relayRevision??0)+1;store.put('node',n.id,n);
+        }
+        continue;
+      }
       try{
         const target=linkedTargetHash(n,nodes),changed=target!==n.relayTargetHash;
         if(changed){n.relayRevision=(n.relayRevision??0)+1;n.relayTargetHash=target;n.syncRetryAt=0;}
@@ -137,9 +145,9 @@ export function createSystem(config) {
   agent.use('/v1/agent',(req,res,next)=>{const id=req.get('x-node-id'),auth=bearer(req),n=id?store.get('node',id):null;if(!n||!auth||digest(auth)!==n.agentHash)return next(error('Agent 凭据无效',401));req.node=n;next();},rateLimit({windowMs:60000,limit:300,keyGenerator:req=>req.node.id,standardHeaders:'draft-8',legacyHeaders:false}));
   agent.get('/v1/agent/status',(req,res)=>res.json({ok:true,nodeId:req.node.id,version,agentProtocol:1}));
   agent.post('/v1/agent/poll',(req,res)=>store.tx(()=>{
-    const n=getNode(req.node.id),input=z.object({report:z.record(z.unknown()),bundle:z.any().optional()}).parse(req.body);n.report=input.report;n.lastSeen=now();observeAddresses(n,input.report.network);
+    let n=getNode(req.node.id);const input=z.object({report:z.record(z.unknown()),bundle:z.any().optional()}).parse(req.body);n.report=input.report;n.lastSeen=now();observeAddresses(n,input.report.network);
     if(input.bundle){n.observed=validateBundle(input.bundle);n.observedHash=hashBundle(n.observed);if(!n.draft){n.draft=clone(n.observed);n.draftBaseHash=n.observedHash;n.revision++;}}
-    store.put('node',n.id,n);monitoring.accept(n,input.report.monitor);refreshLinks();Object.assign(n,store.get('node',n.id));
+    store.put('node',n.id,n);monitoring.accept(n,input.report.monitor);refreshLinks();n=store.get('node',n.id);
     if((n.needsSync||n.needsRelaySync)&&!busy(n.id)&&n.observed&&input.bundle&&!n.report.configError&&!n.relaySyncError&&(n.syncRetryAt??0)<=Date.now())deploy(n,n.observed,n.needsSync?'device-sync':'address-sync');
     let job=busy(n.id);
     if(job?.status==='running'&&job.leaseUntil>Date.now())job=null;

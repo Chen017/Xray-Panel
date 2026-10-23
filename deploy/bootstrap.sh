@@ -4,7 +4,7 @@
 set -euo pipefail
 umask 077
 [[ $EUID == 0 ]] || { echo '请以 root 运行'; exit 1; }
-version=1.2.0
+version=1.3.0
 home=/opt/xray-panel-manager
 missing=0
 for tool in python3 curl tar; do command -v "$tool" >/dev/null || missing=1; done
@@ -21,10 +21,11 @@ curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-ti
 curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 30 "$base.sha256" -o "$work/source.sha256"
 python3 - "$work" "$home" "$version" <<'PY'
 from pathlib import Path
-import hashlib,json,os,shutil,sys,tarfile
+import hashlib,json,os,shutil,sys,tarfile,tempfile
 work,home,version=Path(sys.argv[1]),Path(sys.argv[2]),sys.argv[3]
 archive=work/'source.tar.gz'
-if hashlib.sha256(archive.read_bytes()).hexdigest()!= (work/'source.sha256').read_text().split()[0]:
+digest=hashlib.sha256(archive.read_bytes()).hexdigest()
+if digest!= (work/'source.sha256').read_text().split()[0]:
     raise SystemExit('发布包 SHA256 不匹配')
 source=work/'source';source.mkdir()
 with tarfile.open(archive) as tar:
@@ -36,9 +37,20 @@ if json.loads((source/'package.json').read_text())['version']!=version:
     raise SystemExit('发布包版本不匹配')
 if not (source/'deploy/lifecycle.py').is_file(): raise SystemExit('发布包缺少统一管理器')
 destination=home/'versions'/version
-if home.is_symlink() or destination.is_symlink(): raise SystemExit('管理器安装目录不能是符号链接')
+if home.is_symlink() or destination.parent.is_symlink() or destination.is_symlink(): raise SystemExit('管理器安装目录不能是符号链接')
 destination.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
-if not destination.exists(): shutil.copytree(source,destination)
+try: complete=(destination/'.release-complete').read_text()==digest and json.loads((destination/'package.json').read_text())['version']==version and (destination/'deploy/lifecycle.py').is_file()
+except (OSError,ValueError,KeyError): complete=False
+if not complete:
+    with tempfile.TemporaryDirectory(prefix='.install-',dir=destination.parent) as temp:
+        staged,retired=Path(temp)/'release',Path(temp)/'previous'
+        shutil.copytree(source,staged)
+        (staged/'.release-complete').write_text(digest)
+        if destination.exists(): os.replace(destination,retired)
+        try: os.replace(staged,destination)
+        except BaseException:
+            if retired.exists(): os.replace(retired,destination)
+            raise
 temporary=home/('.current-'+str(os.getpid()));temporary.symlink_to(destination);os.replace(temporary,home/'current')
 command=Path('/usr/local/bin/xray-panel')
 command.write_text('#!/bin/bash\nexec /usr/bin/python3 /opt/xray-panel-manager/current/deploy/lifecycle.py "$@"\n');command.chmod(0o755)
