@@ -115,3 +115,27 @@ test('deleting an observer prunes its configuration and restarts evidence collec
  assert.equal((await f.s.call(`/nodes/${f.cn1.id}`,'DELETE')).status,200);assert.ok(!f.m.settings().cnProbeIds.includes(f.cn1.id));assert.match(f.m.status().notice,/不足/);
  }finally{await f.s.close();}
 });
+
+test('malformed result entries cannot abort a heartbeat or discard valid observations',async()=>{
+ const f=await fixture();try{
+ f.tick();const p=f.m.plan(f.cn1);
+ assert.doesNotThrow(()=>f.m.accept(f.cn1,{planId:p.id,results:[null,17,{id:p.targets[0].id,ok:false,code:'timeout'}]}));
+ assert.equal(f.m.status().incidents.length,1);
+ }finally{await f.s.close();}
+});
+
+test('status re-evaluates quorum freshness even without another target heartbeat',async()=>{
+ const f=await fixture();try{
+ for(let i=0;i<3;i++)await f.tcpRound();
+ // A slower global round must not keep expired mainland failures marked confirmed.
+ const r=f.m.status().incidents.find(r=>r.kind==='tcp');r.samples[f.global.id].periodMs=600000;f.s.store.put('monitor',r.id,r);
+ f.advance(181000);const current=f.m.status().incidents.find(x=>x.id===r.id);
+ assert.equal(current.assessment,'insufficient');assert.equal(current.active,true,'retain incident history until confirmed recovery');
+ }finally{await f.s.close();}
+});
+
+test('Telegram rejects non-object JSON responses without throwing',async()=>{
+ for(const body of [null,17,'ok',[]]){
+  const result=await sendTelegram(cfg,'test',async()=>response(body));assert.equal(result.ok,false);
+ }
+});

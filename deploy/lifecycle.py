@@ -201,7 +201,7 @@ def discover_panel():
         if len(volumes) != 1:
             raise ValueError('现有面板使用自定义数据挂载，请先人工确认迁移')
         labels = item['Config'].get('Labels', {})
-        found.append({'container': item['Id'], 'project': labels.get('com.docker.compose.project', 'xray-panel'), 'volume': volumes[0]['Name'], 'image': item['Image'], 'env': env})
+        found.append({'container': item['Id'], 'running': item['State']['Running'], 'project': labels.get('com.docker.compose.project', 'xray-panel'), 'volume': volumes[0]['Name'], 'image': item['Image'], 'env': env})
     if len(found) > 1:
         raise ValueError('发现多个面板，拒绝自动选择')
     return found[0] if found else None
@@ -247,12 +247,39 @@ def latest_version():
         return version_tag(json.loads(response.read(1024 * 1024))['tag_name'].removeprefix('v'))
 
 
+def release_ready(destination, version):
+    try:
+        return (not destination.is_symlink() and
+                re.fullmatch(r'[0-9a-f]{64}', (destination / '.release-complete').read_text()) is not None and
+                json.loads((destination / 'package.json').read_text())['version'] == version and
+                (destination / 'deploy/lifecycle.py').is_file())
+    except (OSError, ValueError, KeyError):
+        return False
+
+
+def stage_release(source, destination, digest):
+    """Publish only a complete copy; an interrupted copy cannot become a cache hit."""
+    if HOME.is_symlink() or destination.parent.is_symlink() or destination.is_symlink():
+        raise ValueError('管理器安装目录不能是符号链接')
+    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with tempfile.TemporaryDirectory(prefix='.install-', dir=destination.parent) as temp:
+        staged, retired = Path(temp) / 'release', Path(temp) / 'previous'
+        shutil.copytree(source, staged)
+        (staged / '.release-complete').write_text(digest)
+        if destination.exists(): os.replace(destination, retired)
+        try:
+            os.replace(staged, destination)
+        except BaseException:
+            if retired.exists(): os.replace(retired, destination)
+            raise
+
+
 def install_manager(version):
     version_tag(version)
     if version.split('.')[0] != VERSION.split('.')[0]:
         raise ValueError('跨主版本更新需先阅读迁移说明')
     destination = HOME / 'versions' / version
-    if not (destination / 'deploy/lifecycle.py').exists():
+    if not release_ready(destination, version):
         with tempfile.TemporaryDirectory(prefix='manager-download-') as temp:
             archive = Path(temp) / 'release.tar.gz'
             base = 'https://github.com/Chen017/Xray-Panel/releases/download/v' + version + '/xray-panel-' + version + '.tar.gz'
@@ -273,14 +300,36 @@ def install_manager(version):
                 raise ValueError('发布包版本不匹配')
             if not (extracted / 'deploy/lifecycle.py').is_file():
                 raise ValueError('此发布包不支持统一管理器，请使用 1.1.0 或更新版本')
-            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            shutil.copytree(extracted, destination)
+            stage_release(extracted, destination, digest)
     link = HOME / 'current'
     pending = HOME / ('.current-' + secrets.token_hex(4))
     pending.symlink_to(destination)
     os.replace(pending, link)
     write('/usr/local/bin/xray-panel', '#!/bin/bash\nexec /usr/bin/python3 /opt/xray-panel-manager/current/deploy/lifecycle.py "$@"\n', 0o755)
     return destination
+
+
+def snapshot_panel(runtime, backup):
+    # Keep the snapshot on the data volume, rather than the container's 32 MiB
+    # /tmp mount. Stream it out and unlink it even if reading/output fails.
+    filename = '/app/data/.panel-backup-' + secrets.token_hex(8) + '.sqlite'
+    script = """import {DatabaseSync} from 'node:sqlite';import fs from 'node:fs';
+const file=%s,db=new DatabaseSync('/app/data/panel.sqlite');
+try{db.exec("VACUUM INTO '"+file+"'");const s=fs.statSync('/app/data/panel.sqlite');process.stdout.write(JSON.stringify({uid:s.uid,gid:s.gid})+'\\n');process.stdout.write(fs.readFileSync(file));}
+finally{db.close();fs.rmSync(file,{force:true});}
+""" % json.dumps(filename)
+    if runtime.get('container') and runtime.get('running', True):
+        command = ['docker', 'exec', runtime['container'], 'node']
+    else:
+        command = ['docker', 'run', '--rm', '--network=none', '--read-only', '--user=0', '--tmpfs', '/tmp', '-v', runtime['volume'] + ':/app/data', '--entrypoint', 'node', runtime['image']]
+    metadata, separator, database = run([*command, '--input-type=module', '-e', script]).partition(b'\n')
+    if not separator or not database: raise ValueError('数据库备份不完整，拒绝更新')
+    owner = json.loads(metadata)
+    if any(not isinstance(owner.get(key), int) or owner[key] < 0 for key in ('uid', 'gid')):
+        raise ValueError('数据库文件所有权无效，拒绝更新')
+    (backup / 'panel.sqlite').write_bytes(database)
+    (backup / 'panel.sqlite').chmod(0o600)
+    return owner
 
 
 def panel_install(version, domains=None):
@@ -323,14 +372,15 @@ def panel_install(version, domains=None):
         origins = [safe_url(value if value.startswith('https://') else 'https://' + value) for value in domains]
         if len(set(origins)) != 3: raise ValueError('三个入口必须使用不同域名')
         write(env_file, 'PANEL_MASTER_KEY=' + secrets.token_hex(32) + '\nPANEL_ADMIN_PASSWORD=' + secrets.token_urlsafe(36) + '\nPANEL_SECURE_COOKIE=true\n' + '\n'.join(key + '=' + value for key, value in zip(('PANEL_ADMIN_ORIGIN', 'PANEL_SUBSCRIPTION_ORIGIN', 'PANEL_AGENT_ORIGIN'), origins)) + '\n')
-    if existing:
-        # VACUUM INTO makes a consistent snapshot. docker cp cannot read some tmpfs mounts.
-        filename = '/tmp/panel-backup-' + secrets.token_hex(8) + '.sqlite'
-        run(['docker', 'exec', existing['container'], 'node', '--input-type=module', '-e', "import {DatabaseSync} from 'node:sqlite';const db=new DatabaseSync('/app/data/panel.sqlite');db.exec(\"VACUUM INTO '" + filename + "'\");db.close();"])
-        owner = json.loads(run(['docker', 'exec', existing['container'], 'node', '-e', "const s=require('fs').statSync('/app/data/panel.sqlite');console.log(JSON.stringify({uid:s.uid,gid:s.gid}));"]))
-        (backup / 'panel.sqlite').write_bytes(run(['docker', 'exec', existing['container'], 'cat', filename]))
-        (backup / 'panel.sqlite').chmod(0o600)
-        write(backup / 'previous.json', json.dumps({key: value for key, value in existing.items() if key != 'env'}))
+    previous = existing
+    if not previous and saved:
+        # Uninstall keeps the volume. Reinstalling a new version needs the same
+        # rollback protection as upgrading a running container.
+        run(['docker', 'volume', 'inspect', volume])
+        previous = {'volume': volume, 'image': saved.get('image') or IMAGE + ':' + version_tag(saved['version']), 'running': False}
+    if previous:
+        owner = snapshot_panel(previous, backup)
+        write(backup / 'previous.json', json.dumps({key: value for key, value in previous.items() if key != 'env'}))
     else:
         run(['docker', 'volume', 'create', volume])
     command = ['docker', 'compose', '-p', project, '-f', str(compose)]
@@ -348,19 +398,21 @@ def panel_install(version, domains=None):
             time.sleep(2)
         if not healthy: raise RuntimeError('新面板健康检查未通过')
     except BaseException:
-        if existing:
+        if previous:
             # Restore DB before starting the old image, including future schema migrations.
             subprocess.run([*command, 'stop', 'panel'], capture_output=True)
             restore = "const fs=require('fs');fs.copyFileSync('/backup/panel.sqlite','/data/panel.sqlite');fs.chownSync('/data/panel.sqlite'," + str(owner['uid']) + ',' + str(owner['gid']) + ");for(const x of ['-wal','-shm'])fs.rmSync('/data/panel.sqlite'+x,{force:true});"
-            run(['docker', 'run', '--rm', '--network=none', '--user=0', '-v', volume + ':/data', '-v', str(backup) + ':/backup:ro', '--entrypoint', 'node', existing['image'], '-e', restore])
+            run(['docker', 'run', '--rm', '--network=none', '--user=0', '-v', volume + ':/data', '-v', str(backup) + ':/backup:ro', '--entrypoint', 'node', previous['image'], '-e', restore])
             shutil.copy2(backup / 'panel.env', env_file)
-            write(compose, compose_text(existing['image'], volume, env_file))
-            run([*command, 'up', '-d', '--no-build', 'panel'])
+            write(compose, compose_text(previous['image'], volume, env_file))
+            if previous.get('running', True): run([*command, 'up', '-d', '--no-build', 'panel'])
+            elif existing: run([*command, 'create', '--no-build', 'panel'])
+            else: run([*command, 'down'])
         else:
             subprocess.run([*command, 'down'], capture_output=True)
             if previous_compose: write(compose, previous_compose)
         raise
-    write(state_file, json.dumps({'project': project, 'volume': volume, 'envFile': str(env_file), 'version': version, 'compose': str(compose)}, indent=2))
+    write(state_file, json.dumps({'project': project, 'volume': volume, 'envFile': str(env_file), 'version': version, 'image': image, 'compose': str(compose)}, indent=2))
     print('Panel 已就绪，版本 ' + version + '。配置与初始密码保存在 ' + str(env_file))
     print('1Panel 编排请使用 ' + str(compose) + '；三个网站与 Cloudflare 规则由你配置。备份：' + str(backup))
 

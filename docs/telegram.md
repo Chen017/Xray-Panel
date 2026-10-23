@@ -10,7 +10,7 @@ SNI 由目标节点自己的 Agent 检查：按 IPv4 / IPv6 解析域名，验�
 
 ## 配置
 
-1. 本版功能需要 Panel 与有关 Agent v1.2.0。Panel 更新与 Agent 更新分别执行，不会自动给所有 VPS 更新 Agent。
+1. 本版功能需要 Panel 与有关 Agent v1.2.0 或更新版本，推荐使用含审查修复的 v1.3.0。Panel 更新与 Agent 更新分别执行，不会自动给所有 VPS 更新 Agent。
 2. 将大陆/境外机器作为节点接入。可以直接使用面板提供的独立一键 Agent 脚本，不需要安装 Xray Script 或 Xray。没有 Xray 的接入记录也可选择为测点；此时没有代理配置可导入，其他节点的网络检测仍能执行。
 3. 在 Telegram 的官方 BotFather 创建 Bot，保存 Token。向 Bot 发送 `/start`，或把它加入接收通知的群组。群组/频道需有发送权限；话题群可填话题 ID。Chat ID 使用数字，群组 ID 通常为负数。获取 ID 见 [Telegram 官方教程](https://core.telegram.org/bots/tutorial)。不要把 Token 发到公开聊天、URL 查询或 GitHub。
 4. 面板「安全与设置 → Telegram 与网络告警」填写 Bot Token、Chat ID，选择大陆与境外测点。Bot Token 经面板数据库加密保存，页面仅显示“已保存”；留空保留原值。清除时显式打开“清除已有 Bot Token”，并先关闭启用开关。

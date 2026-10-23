@@ -35,9 +35,17 @@ esac''',
     assert (root/'received').read_text()==data['enrollment']
     assert 'ca-certificates' in (root/'apt.log').read_text()
     assert data['secret'] not in result.stdout+result.stderr
+    # A pre-1.3 interrupted copy can leave lifecycle.py but omit other files.
+    # Never treat mere directory/lifecycle.py existence as a complete cache.
+    cached=home/'versions'/data['version']
+    (cached/'package.json').unlink()
+    (cached/'.release-complete').unlink(missing_ok=True)
+    (cached/'deploy/lifecycle.py').write_text("raise SystemExit('partial cache executed')\n")
     # Repeat installation preserves the manager and still delivers credentials once.
     result=subprocess.run(['bash'],input=script,text=True,capture_output=True,env=env,timeout=30)
     assert result.returncode==0,result.stdout+result.stderr
     assert (root/'received').exists(),result.stdout+result.stderr
     assert (root/'received').read_text()==data['enrollment']
+    assert json.loads((cached/'package.json').read_text())['version']==data['version']
+    assert (cached/'.release-complete').read_text()==hashlib.sha256(archive.read_bytes()).hexdigest()
 print('bootstrap shell checks passed')

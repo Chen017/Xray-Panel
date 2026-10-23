@@ -47,3 +47,14 @@ test('address-only changes do not deploy Xray; linked changes use validated jobs
  assert.equal((await poll(line,b)).job,null);
  }finally{await s.close();}
 });
+
+test('removing the last linked landing clears stale errors and unblocks device synchronization',async()=>{
+ const s=await testSystem();try{await s.login();
+ const created=(await s.call('/nodes','POST',{name:'unlinked line',ipv4:'8.8.8.8'})).body;
+ const n=s.store.get('node',created.node.id),bundle=fixtureBundle();
+ Object.assign(n,{observed:bundle,observedHash:hashBundle(bundle),needsSync:true,needsRelaySync:true,relaySyncError:'关联落地已不存在',relayTargetHash:'old-linked-target',relayRevision:4});s.store.put('node',n.id,n);
+ const r=await fetch(s.urls[2]+'/v1/agent/poll',{method:'POST',headers:{'Content-Type':'application/json','X-Node-ID':n.id,Authorization:'Bearer '+created.agentToken},body:JSON.stringify({report:{},bundle})});
+ assert.equal(r.status,200);const result=await r.json();assert.equal(result.job?.source,'device-sync');
+ const current=s.store.get('node',n.id);assert.equal(current.needsRelaySync,false);assert.equal(current.relaySyncError,undefined);assert.equal(current.relayTargetHash,undefined);
+ }finally{await s.close();}
+});

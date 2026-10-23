@@ -42,8 +42,7 @@ class LifecycleTests(unittest.TestCase):
         def run(args,**kw):
             calls.append(args)
             if args[:3]==['docker','exec','old']:
-                if 'cat' in args:return b'consistent database snapshot'
-                if any('statSync' in x for x in args):return b'{"uid":1000,"gid":1000}'
+                if any('VACUUM INTO' in x for x in args):return b'{"uid":1000,"gid":1000}\nconsistent database snapshot'
             if 'ps' in args and '-q' in args:return b'new-container'
             return b''
         def inspect(args):return [{'State':{'Health':{'Status':'healthy' if healthy else 'unhealthy'}}}]
@@ -57,6 +56,34 @@ class LifecycleTests(unittest.TestCase):
             self.assertIn('sha256:old',(m.HOME/'panel.compose.yaml').read_text())
             restore=next(c for c in calls if c[:3]==['docker','run','--rm']);self.assertTrue(any('chownSync' in x and '1000,1000' in x for x in restore))
             backups=list((m.HOME/'backups').glob('*/panel.sqlite'));self.assertEqual(backups[0].read_bytes(),b'consistent database snapshot')
+    def test_stopped_panel_is_backed_up_without_exec_and_remains_stopped_on_failure(self):
+        old={'container':'stopped','running':False,'project':'1panel','volume':'original-volume','image':'sha256:old','env':{'PANEL_MASTER_KEY':'original-key'}}
+        calls=[]
+        def run(args,**kw):
+            calls.append(args)
+            if args[:2]==['docker','exec']:self.fail('cannot exec a stopped container')
+            if any('VACUUM INTO' in x for x in args):return b'{"uid":1000,"gid":1000}\nstopped snapshot'
+            if 'ps' in args:return b'new-container'
+            return b''
+        with patch.object(m,'discover_panel',return_value=old),patch.object(m,'run',side_effect=run),patch.object(m,'docker_json',return_value=[{'State':{'Health':{'Status':'unhealthy'}}}]),patch.object(m.shutil,'which',return_value='/bin/docker'),patch.object(m.subprocess,'run',return_value=subprocess.CompletedProcess([],0)):
+            with self.assertRaises(RuntimeError):m.panel_install(m.VERSION)
+        self.assertTrue(any('chownSync' in x for c in calls for x in c))
+        self.assertEqual(sum('up' in c for c in calls),1,'rollback must not start a previously stopped panel')
+        self.assertTrue(any('create' in c and 'panel' in c for c in calls))
+    def test_retained_panel_volume_gets_a_snapshot_and_rollback_after_reinstall_failure(self):
+        env=m.HOME/'panel.env';m.write(env,'PANEL_MASTER_KEY=original-key\n')
+        m.write(m.HOME/'panel.json',json.dumps({'project':'kept','volume':'kept-volume','envFile':str(env),'version':'1.1.0'}))
+        calls=[]
+        def run(args,**kw):
+            calls.append(args)
+            if any('VACUUM INTO' in x for x in args):return b'{"uid":1000,"gid":1000}\nretained snapshot'
+            if 'ps' in args:return b'new-container'
+            return b''
+        with patch.object(m,'discover_panel',return_value=None),patch.object(m,'run',side_effect=run),patch.object(m,'docker_json',return_value=[{'State':{'Health':{'Status':'unhealthy'}}}]),patch.object(m.shutil,'which',return_value='/bin/docker'),patch.object(m.subprocess,'run',return_value=subprocess.CompletedProcess([],0)):
+            with self.assertRaises(RuntimeError):m.panel_install(m.VERSION)
+        self.assertTrue(any('chownSync' in x for c in calls for x in c),'retained database must be rolled back too')
+        self.assertEqual(next((m.HOME/'backups').glob('*/panel.sqlite')).read_bytes(),b'retained snapshot')
+        self.assertEqual(json.loads((m.HOME/'panel.json').read_text())['version'],'1.1.0')
     def test_failed_pull_never_changes_existing_panel(self):
         with patch.object(m.shutil,'which',return_value='/bin/docker'),patch.object(m.subprocess,'run',return_value=subprocess.CompletedProcess([],0)),patch.object(m,'run',side_effect=[b'',RuntimeError('pull failed')]):
             with self.assertRaises(RuntimeError):m.panel_install(m.VERSION)
@@ -77,5 +104,28 @@ class LifecycleTests(unittest.TestCase):
         self.assertNotIn('testDriver',m.enrollment(json.dumps({**self.config,'testDriver':'anything'})))
         for value in ['latest','1.0','1;id']:
             with self.assertRaises(ValueError):m.version_tag(value)
+    def test_interrupted_manager_copy_never_becomes_a_complete_cached_release(self):
+        source=self.root/'source';(source/'deploy').mkdir(parents=True)
+        (source/'package.json').write_text(json.dumps({'version':m.VERSION}));(source/'deploy/lifecycle.py').write_text('complete manager')
+        destination=m.HOME/'versions'/m.VERSION
+        def interrupted(src,dst,*a,**kw):
+            Path(dst).mkdir(parents=True);(Path(dst)/'partial').touch();raise OSError('interrupted copy')
+        with patch.object(m.shutil,'copytree',side_effect=interrupted):
+            with self.assertRaises(OSError):m.stage_release(source,destination,'a'*64)
+        self.assertFalse(destination.exists());self.assertFalse(m.release_ready(destination,m.VERSION))
+        destination.mkdir();(destination/'partial').touch()
+        m.stage_release(source,destination,'a'*64)
+        self.assertTrue(m.release_ready(destination,m.VERSION));self.assertFalse((destination/'partial').exists())
+        self.assertEqual(list(destination.parent.glob('.install-*')),[])
+    def test_manager_publish_failure_restores_the_previous_cache(self):
+        source=self.root/'source';source.mkdir();(source/'new').touch()
+        destination=m.HOME/'versions'/m.VERSION;destination.mkdir(parents=True);(destination/'old').touch()
+        real_replace=m.os.replace
+        def fail_publish(src,dst):
+            if Path(src).name=='release':raise OSError('rename failed')
+            return real_replace(src,dst)
+        with patch.object(m.os,'replace',side_effect=fail_publish):
+            with self.assertRaises(OSError):m.stage_release(source,destination,'a'*64)
+        self.assertTrue((destination/'old').exists());self.assertFalse((destination/'new').exists())
 
 if __name__=='__main__':unittest.main()
