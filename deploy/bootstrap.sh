@@ -4,7 +4,7 @@
 set -euo pipefail
 umask 077
 [[ $EUID == 0 ]] || { echo '请以 root 运行'; exit 1; }
-version=1.3.0
+version=1.3.1
 home=/opt/xray-panel-manager
 missing=0
 for tool in python3 curl tar; do command -v "$tool" >/dev/null || missing=1; done

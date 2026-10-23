@@ -11,7 +11,7 @@ import YAML from 'yaml';
 import {createMonitoring} from './monitoring.mjs';
 import { Store,token,digest,passwordHash,passwordVerify } from './store.mjs';
 import {addressPolicy,effectiveAddress,observeAddresses,resolveLinkedAddresses,linkedTargetHash} from '../shared/addresses.mjs';
-import { validateBundle,hashBundle,compileDevices,providerProxies,providerLinks,readSettings,patchSettings,patchRouting,keypair,hostSchema,newBundle,settingsSchema,clone } from '../shared/config.mjs';
+import { validateBundle,hashBundle,compileDevices,providerProxies,providerLinks,providerNameEntries,readSettings,patchSettings,patchRouting,keypair,hostSchema,newBundle,settingsSchema,clone } from '../shared/config.mjs';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const version=JSON.parse(readFileSync(path.join(root,'package.json'),'utf8')).version;
@@ -22,6 +22,7 @@ const addressSchema=z.object({mode:z.enum(['auto','manual']),value:z.union([host
 const nodeSchema=z.object({name:z.string().trim().min(1).max(80),ipv4:z.union([hostSchema,z.literal('')]).default(''),ipv6:z.union([hostSchema,z.literal('')]).default(''),enabled:z.boolean().default(true),addressPolicy:z.object({ipv4:addressSchema,ipv6:addressSchema}).optional()});
 const grantSchema=z.object({nodeId:idSchema,routes:z.array(z.string().regex(/^(direct|\d{1,6})$/)).min(1).max(33),modes:z.array(z.enum(['split','single4','single6','vision4','vision6'])).min(1).max(5)});
 const deviceSchema=z.object({name:z.string().trim().min(1).max(80),publicKey:z.string().regex(/^age1[023456789acdefghjklmnpqrstuvwxyz]{58}$/),grants:z.array(grantSchema).max(100)});
+const subscriptionNamesSchema=z.object({revision:z.number().int().nonnegative(),names:z.record(z.string().regex(/^[0-9a-f]{40}$/),z.string().trim().max(120).refine(s=>!/[\x00-\x1f\x7f]/.test(s),'名称不能包含换行或控制字符').refine(s=>!['DIRECT','REJECT','REJECT-DROP','PASS','COMPATIBLE','GLOBAL'].includes(s),'名称不能使用 Mihomo 保留名称')).refine(v=>Object.keys(v).length<=5000,'一次最多修改 5000 条名称')});
 const actionSchema=z.enum(['inspect','detect-addresses','firewall-status','validate','dump','logs','start','stop','restart','enable','disable','update-core','update-script','update-geodata','maintenance','bbr','diagnostics','relay-test','relay-keygen','uninstall','install-standard','install-landing']);
 export const MAX_BACKUP_BYTES=64*1024*1024;
 const MAX_BACKUP_RECORDS=100000;
@@ -115,6 +116,19 @@ export function createSystem(config) {
   admin.get('/api/jobs',(_,res)=>res.json(store.list('job').sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).slice(0,200).map(({payload,leaseHash,...j})=>j)));
   admin.post('/api/jobs/:id/cancel',(req,res)=>{const j=store.get('job',req.params.id);if(!j||j.status!=='queued')throw error('只能取消尚未领取的任务',409);j.status='cancelled';j.completedAt=now();store.tx(()=>{store.put('job',j.id,j);if(j.action==='deploy'){const n=getNode(j.nodeId);retrySync(n);store.put('node',n.id,n);}});store.audit('job.cancelled',j.nodeId,j.id);res.json({ok:true});});
   admin.get('/api/devices',(_,res)=>res.json(store.list('device').map(publicDevice)));
+  const nameEntries=d=>d.revoked?[]:store.list('node').filter(n=>n.enabled&&n.applied).flatMap(n=>providerNameEntries(n,n.applied,d,config.masterKey));
+  admin.get('/api/devices/:id/names',(req,res)=>{const d=getDevice(req.params.id);res.json({revision:d.nameRevision??0,entries:nameEntries(d)});});
+  admin.put('/api/devices/:id/names',(req,res)=>{
+    const d=getDevice(req.params.id),input=subscriptionNamesSchema.parse(req.body);
+    if(d.revoked)throw error('设备已撤销，不能修改订阅名称',409);
+    if(input.revision!==(d.nameRevision??0))throw error('名称已被另一页面修改，请重新载入',409);
+    const entries=nameEntries(d),allowed=new Set(entries.map(e=>e.key));
+    if(Object.keys(input.names).some(key=>!allowed.has(key)))throw error('节点或授权已变化，请重新载入名称列表',409);
+    const names={...d.subscriptionNames};for(const [key,value]of Object.entries(input.names)){if(value)names[key]=value;else delete names[key];}
+    const used=new Set();for(const entry of entries){const name=names[entry.key]||entry.defaultName;if(used.has(name))throw error('订阅名称重复：'+name+'；每条节点名称必须唯一');used.add(name);}
+    d.subscriptionNames=names;d.nameRevision=(d.nameRevision??0)+1;store.put('device',d.id,d);store.audit('device.names.updated',d.id);
+    res.json({revision:d.nameRevision,entries:nameEntries(d)});
+  });
   const verifyDevice=input=>{const v=deviceSchema.parse(input),e=new age.Encrypter();e.addRecipient(v.publicKey);if(new Set(v.grants.map(g=>g.nodeId)).size!==v.grants.length)throw error('同一节点只能添加一次授权');for(const g of v.grants){const n=getNode(g.nodeId),routes=n.draft?.files['relay.json']?.landings?.map(l=>l.id)??[];if(g.routes.some(r=>r!=='direct'&&!routes.includes(r)))throw error('授权包含未知落地出口');}return v;};
   admin.post('/api/devices',(req,res)=>{const input=verifyDevice(req.body),secret=token(),d={id:randomUUID(),...input,epoch:randomUUID(),tokenHash:digest(secret),revoked:false,createdAt:now()};store.tx(()=>{store.put('device',d.id,d);markSync(d.grants.map(g=>g.nodeId));});store.audit('device.created',d.id);res.status(201).json({device:publicDevice(d),token:secret,url:`${config.subscriptionOrigin}/v1/subscriptions/${d.id}`});});
   admin.put('/api/devices/:id',(req,res)=>{const d=getDevice(req.params.id),v=verifyDevice(req.body),ids=[...d.grants,...v.grants].map(g=>g.nodeId);Object.assign(d,v);store.tx(()=>{store.put('device',d.id,d);markSync(ids);});store.audit('device.updated',d.id);res.json(publicDevice(d));});
