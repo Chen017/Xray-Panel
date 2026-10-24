@@ -9,7 +9,7 @@
 - Copyright: Remnawave and contributors.
 - Retained/adapted sources: src/shared/constants/theme/theme.ts → web/theme.ts; src/app/layouts/dashboard/main-layout/layout-variants/sidebar-shell.layout.tsx and layout.module.css → reduced AppShell/sidebar in web/panel.tsx and web/style.css.
 - Original retained reference copies: web/upstream/. The complete unrelated frontend is excluded from the deliverable.
-- Changes: removed billing/user/quota/squad/bot/terminal/navigation modules and their dependencies; replaced API/auth/config/operations UI for Chen017/Xray; added Chinese operational views. This is a reduced derivative frontend with a new compatible control plane, not an unchanged Remnawave distribution.
+- Changes: removed billing/user/quota/squad/bot/terminal/navigation modules and their dependencies; replaced API/auth/config/operations UI for Chen017/Xray; added Chinese operational views, shared node ordering and device subscription controls. This is a reduced derivative frontend with a new compatible control plane, not an unchanged Remnawave distribution.
 
 ## Chen017/Xray
 

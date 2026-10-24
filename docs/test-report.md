@@ -138,3 +138,11 @@ Agent 本轮以部署目标 Linux 环境为准，15 项全部执行，无跳过�
 - 真实 Xray/Mihomo 部署链路 18/18，通过节点统一名称接口完成 Unicode 改名及恢复，并验证独立排序。产物：`.local/test-BagFQ8/`、`.local/download-test-bPQ8Q9/`。
 - 本地浏览器核对节点备注旁入口、统一基础名和任意完整名保存 / 重开、设备仅排序，以及 provider / 下载策略组的分开复制与合并提示。TypeScript / Vite、教程渲染、源码及解压包启动另按本轮构建结果验收。
 - v1.3.4 发布后，Panel 可独立升级到此版本；Agent / Script 不需要更新。
+
+## v1.3.5 全局节点顺序与隐藏下载组
+
+- Node 回归 73/73、Linux Agent 22/22、生命周期 11/11，无跳过。全局顺序保存在加密 system 记录中；覆盖两个不同授权设备的加密订阅、预览和 VLESS 导出、旧设备排序失效、新设备继承、新节点追加、停用 / 未发布节点保留位置、删除、CAS / CSRF、加密持久化和备份恢复。排序不会修改 Token、UUID、VPS 配置或创建部署任务。
+- 真实 Xray v26.3.27 / Mihomo v1.19.32 集成链路 18/18：两个隔离 Agent 节点发布后，在节点管理统一调整顺序，运行中的 Mihomo 刷新 provider 后按相同顺序载入。产物：`.local/test-WRmUSf/`。
+- 订阅下载集成测试 6/6：真实核心 API 返回下载组 `hidden: true`，代理优先、健康失败后 DIRECT、恢复优先和无缓存启动均通过。产物：`.local/download-test-N1wSIp/`。隐藏显示还依赖客户端前端支持该 API 字段；已导入的本地组需补上 `hidden: true` 并重载，仅刷新 provider 无法更新本地主配置。
+- TypeScript / Vite 构建和发布包校验、解压启动、登录、教程及源码下载检查通过。README 仅保留简介、教程入口和运维信息，节点接入移至独立教程；面板内部署指南可读取新教程。
+- Windows 受限沙箱不允许测试连接本机 HTTP；回归在正常本机网络权限及 WSL Debian 中完成，没有使用生产节点。该版本只需更新 Panel，Agent / Script 无需更新。

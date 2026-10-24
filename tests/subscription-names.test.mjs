@@ -34,18 +34,18 @@ test('node names distinguish files, routes and modes and are shared across ident
  assert.equal(subscriptionNameKey(node.id,e.file,e.route,e.mode),e.key);const reduced=structuredClone(applied);delete reduced.files['conf/VLESS-443.json'];assert.equal(providerNameEntries(node,reduced,d,master).find(x=>x.key===e.key).name,'任意完整名称 🐟');
 });
 
-test('node rename updates two encrypted subscriptions, previews and VLESS while preserving credentials, deployment and device order',async()=>{
+test('node rename updates two encrypted subscriptions, previews and VLESS while preserving credentials and deployment',async()=>{
  const f=await fixture();try{const catalog=await f.nodeNames(),e=catalog.entries.find(e=>e.mode==='single4'),original=f.s.store.get('node',f.nodeId),devices=f.s.store.list('device'),jobs=f.s.store.list('job').length,before=await f.subscription();
- const sort=await f.names();await f.save({revision:0,order:sort.entries.map(e=>e.key).reverse()});
+ const sort=await f.names();
  assert.equal((await f.rename({revision:0,subscriptionName:'统一东京',names:{[e.key]:'香港家宽 "🐟"'}})).status,200);
  for(let i=0;i<2;i++){const out=await f.subscription(i);assert.ok(out.some(p=>p.name==='香港家宽 "🐟"'));assert.ok(out.filter(p=>p.name!=='香港家宽 "🐟"').every(p=>p.name.startsWith('统一东京')));const id=f.devices[i].device.id;assert.deepEqual(YAML.parse((await f.s.call(`/devices/${id}/preview`)).body).proxies,out);assert.deepEqual((await f.s.call(`/devices/${id}/links`)).body.split('\n').map(l=>decodeURIComponent(new URL(l).hash.slice(1))),out.map(p=>p.name));}
- assert.deepEqual((await f.names()).entries.map(e=>e.key),sort.entries.map(e=>e.key).reverse());assert.deepEqual((await f.names(1)).order,[]);assert.deepEqual((await f.subscription()).map(p=>p.uuid).sort(),before.map(p=>p.uuid).sort());
+ assert.deepEqual((await f.names()).entries.map(e=>e.key),sort.entries.map(e=>e.key));assert.deepEqual((await f.subscription()).map(p=>p.uuid).sort(),before.map(p=>p.uuid).sort());
  const n=f.s.store.get('node',f.nodeId);assert.equal(hashBundle(n.applied),hashBundle(original.applied));assert.equal(n.syncRevision,original.syncRevision);assert.equal(f.s.store.list('job').length,jobs);for(const d of devices){const saved=f.s.store.get('device',d.id);assert.equal(saved.tokenHash,d.tokenHash);assert.equal(saved.epoch,d.epoch);}
  const old=await f.save({revision:1,names:{[e.key]:'旧窗口尝试覆盖'}});assert.equal(old.status,409);assert.equal((await f.nodeNames()).entries.find(x=>x.key===e.key).name,'香港家宽 "🐟"');
  }finally{await f.s.close();}
 });
 
-test('clearing node aliases restores defaults globally, independent of device sorting and node remarks',async()=>{
+test('clearing node aliases restores defaults globally, independent of node remarks',async()=>{
  const f=await fixture();try{const e=(await f.nodeNames()).entries[0];await f.rename({revision:0,subscriptionName:'基础',names:{[e.key]:'完整名称'}});await f.s.call(`/nodes/${f.nodeId}`,'PATCH',{name:'新的备注'});assert.equal((await f.nodeNames()).entries.find(x=>x.key===e.key).name,'完整名称');
  assert.equal((await f.rename({revision:1,subscriptionName:'',names:{[e.key]:''}})).status,200);assert.ok((await f.nodeNames()).entries.every(x=>x.name.startsWith('新的备注')));assert.deepEqual(f.s.store.get('node',f.nodeId).subscriptionNames,{});
  }finally{await f.s.close();}
@@ -88,54 +88,5 @@ test('combining distinct old device aliases disambiguates collisions and preserv
  const f=await fixture();try{const entries=(await f.nodeNames()).entries,a=entries.find(e=>e.mode==='single4'),b=entries.find(e=>e.mode==='vision4');for(let i=0;i<2;i++){const d=f.s.store.get('device',f.devices[i].device.id);d.subscriptionNames={[i?b.key:a.key]:'旧名相同'};f.s.store.put('device',d.id,d);}
  const node=f.s.store.get('node',f.nodeId);delete node.subscriptionNamingVersion;node.ipv4='';f.s.store.put('node',node.id,node);f.s.store.tx(()=>migrateSubscriptionNames(f.s.store,f.s.config.masterKey));const current=await f.nodeNames();assert.equal(new Set(current.entries.map(e=>e.name)).size,current.entries.length);assert.ok(current.conflicts.length);assert.equal(f.s.store.get('node',node.id).subscriptionNames[a.key],'旧名相同');
  const saved=f.s.store.get('node',node.id);f.s.store.tx(()=>migrateSubscriptionNames(f.s.store,f.s.config.masterKey));assert.deepEqual(f.s.store.get('node',node.id),saved);await f.s.call(`/nodes/${node.id}`,'PATCH',{ipv4:'203.0.113.1'});const out=await f.subscription();assert.equal(new Set(out.map(p=>p.name)).size,out.length);
- }finally{await f.s.close();}
-});
-
-test('device ordering spans nodes, files, routes and modes with one shared export order',()=>{
- const master='b'.repeat(64),first={id:randomUUID(),name:'线路一',enabled:true,ipv4:'203.0.113.1'},second={id:randomUUID(),name:'线路二',enabled:true,ipv4:'203.0.113.2'};
- const device={id:randomUUID(),epoch:randomUUID(),grants:[first,second].map(n=>({nodeId:n.id,routes:['direct'],modes:['single4','vision4']}))};
- const base=fixtureBundle(),extra=settings();extra.port=8443;base.files['conf/VLESS-8443.json']=newBundle(extra).files['conf/VLESS-8443.json'];
- const nodes=[{...first,applied:compileDevices(base,first,[device],master)},{...second,applied:compileDevices(fixtureBundle(),second,[device],master)}];
- const original=deviceProviderNameEntries(nodes,device,master);assert.equal(original.length,6);assert.deepEqual(original.map(e=>e.defaultIndex),[0,1,2,3,4,5]);
- device.subscriptionOrder=[original[5].key,original[2].key,original[4].key,original[0].key,original[3].key,original[1].key];nodes[0].subscriptionNames={[original[2].key]:'跨文件自定义'};
- const ordered=deviceProviderNameEntries(nodes,device,master);assert.deepEqual(ordered.map(e=>e.key),device.subscriptionOrder);
- assert.deepEqual(deviceProviderProxies(nodes,device,master).map(p=>p.name),ordered.map(e=>e.name));assert.deepEqual(deviceProviderLinks(nodes,device,master).map(link=>decodeURIComponent(new URL(link).hash.slice(1))),ordered.map(e=>e.name));
- assert.deepEqual(deviceProviderNameEntries([nodes[1],nodes[0]],device,master).map(e=>e.key),device.subscriptionOrder,'custom order survives source node order changes');
- assert.deepEqual(deviceProviderNameEntries([{...nodes[0],enabled:false},nodes[1]],device,master).map(e=>e.key),[original[5].key,original[4].key]);
- assert.deepEqual(deviceProviderProxies(nodes,{...device,revoked:true},master),[]);
-});
-
-test('device-only sorting stays independent while shared node names update both devices',async()=>{
- const f=await fixture();try{const names=await f.names(),order=names.entries.map(e=>e.key).reverse(),other=(await f.names(1)).entries.map(e=>e.key),key=order[0];assert.equal((await f.save({revision:0,order})).status,200);
- await f.rename({revision:0,names:{[key]:'全设备共享'}});assert.deepEqual((await f.names()).entries.map(e=>e.key),order);assert.deepEqual((await f.names(1)).entries.map(e=>e.key),other);for(let i=0;i<2;i++)assert.ok((await f.subscription(i)).some(p=>p.name==='全设备共享'));
- assert.equal((await f.save({revision:1,order:[]})).status,200);assert.deepEqual((await f.names()).entries.map(e=>e.key),names.entries.map(e=>e.key));assert.equal((await f.names()).entries.find(e=>e.key===key).name,'全设备共享');
- }finally{await f.s.close();}
-});
-
-test('sorting rejects duplicates, invalid, foreign and stale targets without partial name writes',async()=>{
- const f=await fixture();try{
- const names=await f.names(),keys=names.entries.map(e=>e.key),first=keys[0];
- for(const order of [[first,first],['invalid'],Array(5001).fill(first)])assert.equal((await f.save({revision:0,names:{[first]:'不能部分写入'},order})).status,400);
- assert.equal((await f.save({revision:0,names:{[first]:'不能部分写入'},order:['e'.repeat(40)]})).status,409);
- assert.equal((await f.names()).revision,0);assert.deepEqual((await f.names()).order,[]);assert.equal((await f.names()).entries[0].customName,'');
- assert.equal((await f.s.call(f.route(f.devices[0].device.id),'PUT',{revision:0,names:{},order:[...keys].reverse()},{headers:{'X-CSRF-Token':'wrong'}})).status,403);
- assert.equal((await f.save({revision:0,names:{},order:[...keys].reverse()})).status,200);assert.equal((await f.save({revision:0,names:{},order:[]})).status,409);
- await f.s.call(`/nodes/${f.nodeId}`,'PATCH',{enabled:false});assert.equal((await f.save({revision:1,names:{},order:keys})).status,409);
- await f.s.call(`/devices/${f.devices[0].device.id}/revoke`,'POST',{});assert.equal((await f.save({revision:1,names:{},order:[]})).status,409);
- }finally{await f.s.close();}
-});
-
-test('ordering preserves hidden slots, appends new entries, survives encrypted persistence and backup restore',async()=>{
- const f=await fixture();try{
- const initial=await f.names(),keys=initial.entries.map(e=>e.key),order=[...keys].reverse(),id=f.devices[0].device.id;
- await f.save({revision:0,names:{},order});const beforeHidden=f.s.store.get('device',id),g=beforeHidden.grants[0],hidden=initial.entries.find(e=>e.mode==='single4').key;
- await f.s.call(`/devices/${id}`,'PUT',{name:beforeHidden.name,publicKey:beforeHidden.publicKey,grants:[{...g,modes:['split','vision4']}]});
- assert.deepEqual((await f.names()).entries.map(e=>e.key),order.filter(key=>key!==hidden));const changed=order.filter(key=>key!==hidden).reverse();assert.equal((await f.save({revision:1,names:{},order:changed})).status,200);
- const expected=[changed[0],hidden,changed[1]],current=f.s.store.get('device',id);assert.deepEqual(current.subscriptionOrder,expected);
- await f.s.call(`/devices/${id}`,'PUT',{name:current.name,publicKey:current.publicKey,grants:[{...g,modes:['single6',...g.modes]}]});
- const visible=await f.names();assert.deepEqual(visible.entries.slice(0,3).map(e=>e.key),expected);assert.equal(visible.entries[3].mode,'single6');
- const reopened=new Store(f.s.config.dbPath,f.s.config.masterKey);try{assert.deepEqual(reopened.get('device',id).subscriptionOrder,expected);}finally{reopened.close();}
- assert.ok(!readFileSync(f.s.config.dbPath).includes(Buffer.from(expected[0])),'ordering stays inside encrypted records');const backup=(await f.s.call('/backup')).body;await f.s.call('/restore','POST',backup);await f.s.login();assert.deepEqual((await f.names()).entries.map(e=>e.key),visible.entries.map(e=>e.key));
- await f.s.call(`/nodes/${f.nodeId}`,'PATCH',{ipv4:'203.0.113.7'});assert.deepEqual((await f.names()).entries.map(e=>e.key),visible.entries.map(e=>e.key));
  }finally{await f.s.close();}
 });

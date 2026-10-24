@@ -21,7 +21,7 @@
 在 1Panel 的本机 root Bash 终端执行：
 
 ```bash
-(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.3.4/deploy/bootstrap.sh -o "$w"; bash "$w")
+(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.3.5/deploy/bootstrap.sh -o "$w"; bash "$w")
 ```
 
 选择「安装 Panel」，依次输入管理、订阅、Agent 的 HTTPS 域名。程序拉取预构建 Docker 镜像并启动，不需要上传源码、安装 Node 运行环境或手动构建镜像。
@@ -70,7 +70,7 @@ curl -fsS http://127.0.0.1:3002/health
 
 新装初始密码在 `/opt/xray-panel/.env` 的 `PANEL_ADMIN_PASSWORD`。旧项目迁移的环境文件可能是 `/opt/xray-panel-manager/panel.env`，实际路径记录在 `/opt/xray-panel-manager/panel.json`。只在首次创建数据库时使用该初始密码。
 
-再按 [Cloudflare 验收](cloudflare.md#verify) 确认机器令牌与源站限制。接下来接入节点见 [README](../README.md)，客户端配置见 [Mihomo 指南](mihomo.md)。
+再按 [Cloudflare 验收](cloudflare.md#verify) 确认机器令牌与源站限制。接下来接入节点见 [节点接入与管理](nodes.md)，客户端配置见 [Mihomo 指南](mihomo.md)。
 
 ## 更新与 1Panel 编排
 
