@@ -19,6 +19,7 @@
 - Configuration compiler adapted from src/node.jq, core.sh relay rebuild and runtime.sh outbound strategies; existing runtime.sh transaction and firewall.sh are directly executed by agent/bridge.sh.
 - Local change in vendor install.sh: PANEL_UNATTENDED=1 skips interactive export prompts and bootstraps standard or no-inbound landing mode. v2.7.10 additionally introduces the Agent lifecycle submenu, early CLI dispatch and read-only report helper, mirrored from the original script workspace; those changes do not change Xray deployment behavior.
 - Script v2.7.11 adds the shared read-only network_probe.sh module and domestic/Cloudflare menu status, mirrored from the original Script workspace. Panel Agent reuses this same module for network notifications; it does not deploy or modify Xray configuration.
+- Script v2.7.12 resolves the latest published Panel Release before downloading the manager bootstrap, avoiding stale release asset URLs after old releases are removed. The Agent entry and version marker are mirrored from the Script workspace.
 - The supplied Xray repository has no standalone LICENSE file; its source is included as user-provided project code with attribution. Review its licensing before separately redistributing it outside your own project.
 
 ## Dependencies

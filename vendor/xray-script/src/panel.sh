@@ -6,25 +6,42 @@ panel_agent_present() {
 panel_agent_installed() {
     [[ -f /etc/systemd/system/xray-panel-agent.service ]] || [[ $(systemctl show -p LoadState --value xray-panel-agent 2>/dev/null) == loaded ]]
 }
-panel_agent_command() {
+panel_agent_command() (
     if command -v xray-panel >/dev/null; then
         xray-panel agent "$@"
     else
-        local work result
+        local work result release_url version bootstrap_url
+        # Resolve a published release: retained Git tags can outlive deleted assets.
+        if ! release_url=$(curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 \
+            -o /dev/null -w '%{url_effective}' https://github.com/Chen017/Xray-Panel/releases/latest); then
+            _fail '无法获取 Panel 最新正式 Release，尚未安装管理器；请检查 GitHub 连接。'
+            return 1
+        fi
+        if [[ $release_url =~ ^https://github\.com/Chen017/Xray-Panel/releases/tag/(v[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            version=${BASH_REMATCH[1]}
+        else
+            _fail 'Panel 最新正式 Release 地址无效，已停止安装管理器。'
+            return 1
+        fi
+        bootstrap_url="https://raw.githubusercontent.com/Chen017/Xray-Panel/$version/deploy/bootstrap.sh"
         work=$(mktemp -d) || return 1
+        trap 'rm -rf -- "$work"' EXIT
         # Versioned official entry; credentials are read from stdin, never URL/args.
         if curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 \
-            https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.3.2/deploy/bootstrap.sh -o "$work/bootstrap.sh"; then
-            bash "$work/bootstrap.sh" agent "$@"
-            result=$?
+            "$bootstrap_url" -o "$work/bootstrap.sh"; then
+            if bash "$work/bootstrap.sh" agent "$@"; then
+                result=0
+            else
+                result=$?
+                _fail "Panel $version 管理器安装或 Agent 操作失败；请检查上方错误及该版本 Release 安装包是否完整。"
+            fi
         else
-            _fail '无法下载管理器，原 Agent 未改动；请检查网络和正式版本发布状态。'
+            _fail "无法下载 Panel $version 管理器引导脚本：$bootstrap_url；原 Agent 未改动。"
             result=1
         fi
-        rm -rf -- "$work"
         return "$result"
     fi
-}
+)
 panel_agent_menu() {
     # Direct CLI remains non-interactive and accepts all original lifecycle arguments.
     if (( $# )); then
