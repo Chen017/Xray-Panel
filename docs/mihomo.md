@@ -29,7 +29,7 @@ proxy-providers:
     url: "https://sub.example.com/v1/subscriptions/设备ID"
     path: ./proxy_providers/xray.yaml
     interval: 3600
-    proxy: DIRECT
+    proxy: Subscription Download
     age-secret-key: "AGE-SECRET-KEY-1本设备私钥"
     header:
       Authorization:
@@ -40,7 +40,7 @@ proxy-providers:
         - "本设备的CF服务令牌Secret"
     health-check:
       enable: true
-      url: https://www.gstatic.com/generate_204
+      url: https://cp.cloudflare.com/generate_204
       interval: 300
 ```
 
@@ -48,7 +48,27 @@ proxy-providers:
 
 订阅域名开启 Service Auth 时必须保留两个 CF 头，见 [Cloudflare 配置](cloudflare.md)。未启用该层认证才删除这两个头，保留面板的 Authorization。公钥已在面板登记，无需发送 `X-Age-Public-Key`。
 
-`proxy: DIRECT` 避免拉取依赖尚未获取的节点；若所在网络无法直连订阅域名，可改为已有且独立可用的代理策略，不要形成循环依赖。
+同时追加下面的组到原 `proxy-groups` 列表。把 `Existing Proxy` 替换为你已有且独立可用的代理组名称；已有顶层列表时只追加组条目，不要再写一次 `proxy-groups:`。
+
+```yaml
+proxy-groups:
+  - name: Subscription Download
+    type: fallback
+    proxies:
+      - Existing Proxy
+      - DIRECT
+    url: https://cp.cloudflare.com/generate_204
+    interval: 60
+    timeout: 5000
+    lazy: false
+    expected-status: 204
+```
+
+先使用已有代理，健康检测失败后回退 `DIRECT`，恢复后重新优先代理。这不是每次订阅请求失败就立即直连重试；订阅服务器返回错误而检测正常时不会因此切换。
+
+`Existing Proxy` 不得直接或间接引用 `Subscription Download`，也不能只依赖本次下载的 `xray` provider，否则可能循环依赖。首次没有节点缓存时，已有代理和直连至少一种必须能访问订阅域名；否则不能下载，需先准备独立可用的代理。检测 URL 也需在当前网络支持代理和直连，如被拦截可换成自己的稳定 HTTP 204 地址。
+
+字段说明：[proxy-providers](https://wiki.metacubex.one/config/proxy-providers/)、[fallback](https://wiki.metacubex.one/config/proxy-groups/fallback/)。
 
 ## 3. 让策略组使用节点
 
@@ -68,11 +88,11 @@ proxy-groups:
 
 ## 4. 自定义名称与顺序
 
-进入「设备与订阅」→ 对应设备的「节点命名与排序」。按出口、连接模式和配置文件填写完整名称，用右侧上下箭头调整位置，点击「保存名称与顺序」，然后刷新客户端 provider。名称和顺序仅对当前设备生效，Mihomo 订阅、面板预览与 VLESS 分享链接一致；无需部署 Xray 或更新 Agent。
+统一命名：进入「节点管理 → 管理」，点击节点备注旁的「订阅名称」。基础名称留空沿用备注，默认附加配置文件、出口和连接模式；也可给每一条填写**任意完整名称**，无需遵循命名规则。修改基础名称会恢复逐条默认名称，再按需填写完整名称。保存一次，所有有该节点授权的设备刷新 provider 后共用新名称，预览、加密订阅和 VLESS 链接一致；无需部署 Xray 或更新 Agent。
 
-名称留空沿用默认；「恢复默认名称」和「恢复默认顺序」可分别重置，保存后生效。同一设备内名称必须唯一，不能使用 `DIRECT`、`REJECT` 等 Mihomo 保留名称。已有设备无需迁移，未设置时沿用原来的名称和顺序。
+旧设备名称会自动迁到节点。同一条线路的旧名称不一致时，采用最早授权设备的名称并在编辑窗口列出旧值；合并后重名的条目会自动区分。旧值保留在加密数据中供恢复，不能再覆盖新设置。已经移除且无法归属的历史条目仅保留在旧数据中。可在统一命名窗口核对或恢复默认。所有导出条目名称须唯一，不能使用 `DIRECT`、`Subscription Download` 等保留名称。
 
-已排序的条目保持相对位置，新发布条目追加到末尾；暂时不可用的条目保留排序记录。这里控制 provider 输出顺序，客户端或策略组另行排序时，最终显示顺序可能不同。
+独立排序：进入「设备与订阅 → 节点排序」，上下移动并保存，仅调整当前设备顺序；名称仍由节点统一管理。已排序条目保持相对位置，新条目追加到末尾，暂时隐藏的条目保留排序记录。客户端或策略组另行排序时，显示顺序可能不同。
 
 策略组用 `use: [xray]` 会自动载入新名称；如果本地规则、策略组或筛选表达式写死了旧节点名称，改名后也要相应修改。
 

@@ -124,7 +124,7 @@ export const mihomoXhttp = x => Object.fromEntries(Object.entries(x).filter(([k]
 export const subscriptionNameKey=(nodeId,file,route,mode)=>createHash('sha256').update(JSON.stringify([nodeId,file,route,mode])).digest('hex').slice(0,40);
 function providerEntries(node,applied,device,master,sourceFile) {
   const regular=nodeFiles(applied);
-  if(regular.length>1){const regularNames=new Set(regular.map(([name])=>name));return regular.flatMap(([name,file])=>providerEntries({...node,name:`${node.name} · ${name.slice(5,-5)}`},{files:{...Object.fromEntries(Object.entries(applied.files).filter(([n])=>!regularNames.has(n))),[name]:file}},device,master,name));}
+  if(regular.length>1){const regularNames=new Set(regular.map(([name])=>name));return regular.flatMap(([name,file])=>providerEntries({...node,name:`${node.name} · ${name.slice(5,-5)}`,subscriptionName:node.subscriptionName?`${node.subscriptionName} · ${name.slice(5,-5)}`:''},{files:{...Object.fromEntries(Object.entries(applied.files).filter(([n])=>!regularNames.has(n))),[name]:file}},device,master,name));}
   const s=readSettings(applied);if(!s)return [];
   const result=[],grant=device.grants.find(g=>g.nodeId===node.id);if(!grant)return [];
   for(const route of grant.routes)for(const mode of grant.modes) {
@@ -135,7 +135,7 @@ function providerEntries(node,applied,device,master,sourceFile) {
     const sni=f=>f==='4'?s.sni4:s.sni6,sid=f=>f==='4'?s.shortIds4[0]:(s.shortIds6[1]??s.shortIds6[0]);
     const transport=f=>({server:addr(f),port:s.port,tls:true,servername:sni(f),'client-fingerprint':f===family?'chrome':'firefox',alpn:['h2'],'reality-opts':{'public-key':s.publicKey,'short-id':sid(f)}});
     const landing=applied.files['relay.json']?.landings?.find(l=>l.id===route);
-    const file=sourceFile??regular[0][0],key=subscriptionNameKey(node.id,file,route,mode),defaultName=`${node.name} · ${route==='direct'?'直出':landing?.name??route} · ${mode}`,customName=device.subscriptionNames?.[key]??'';
+    const file=sourceFile??regular[0][0],key=subscriptionNameKey(node.id,file,route,mode),defaultName=`${node.subscriptionName||node.name} · ${route==='direct'?'直出':landing?.name??route} · ${mode}`,customName=node.subscriptionNames?.[key]??'';
     const p={name:customName||defaultName,type:'vless',...transport(family),uuid,udp:true,tfo:true,mptcp:true,'packet-encoding':'xudp',encryption:'none'};
     if(mode.startsWith('vision')){p.network='tcp';p.flow='xtls-rprx-vision';}
     else {p.network='xhttp';p['xhttp-opts']={...mihomoXhttp(s.xhttp),host:s.xhttp.host||sni(family),path:s.path};if(split)p['xhttp-opts']['download-settings']={...transport(down),host:s.xhttp.host||sni(down),path:s.path,'reuse-settings':{'max-concurrency':'8-16','c-max-reuse-times':0,'h-max-request-times':'300-600','h-max-reusable-secs':'2400-3600','h-keep-alive-period':0}};}
