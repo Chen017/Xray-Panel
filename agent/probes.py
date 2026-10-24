@@ -2,6 +2,19 @@
 import concurrent.futures,json,ipaddress,socket,ssl,subprocess,sys,time
 from pathlib import Path
 
+NETWORK_SCRIPT=Path(__file__).resolve().parent.parent/'vendor/xray-script/src/network_probe.sh'
+
+def probe_network():
+    try:
+        result=subprocess.run(['bash',str(NETWORK_SCRIPT),'--json'],capture_output=True,text=True,timeout=15)
+        data=json.loads(result.stdout[:4096]) if result.returncode==0 else None
+        if not isinstance(data,dict) or type(data.get('domestic')) is not bool or type(data.get('global')) is not bool:return {'ok':None,'code':'probe_failed'}
+        domestic,global_ok=data['domestic'],data['global']
+        code='ok' if domestic and global_ok else 'domestic_unreachable' if global_ok else 'global_unreachable' if domestic else 'network_unreachable'
+        return {'ok':domestic and global_ok,'domestic':domestic,'global':global_ok,'code':code}
+    except subprocess.TimeoutExpired:return {'ok':None,'code':'probe_timeout'}
+    except (OSError,ValueError):return {'ok':None,'code':'probe_failed'}
+
 def public(value):
     try:
         ip=ipaddress.ip_address(value)
@@ -11,6 +24,7 @@ def public(value):
 def probe_one(target,resolver=socket.getaddrinfo,connector=socket.create_connection,context_factory=ssl.create_default_context):
     start=time.monotonic()
     try:
+        if target.get('kind')=='connectivity':return probe_network()
         host=target['host'];family=socket.AF_INET6 if target['family']==6 else socket.AF_INET
         if target['family'] not in (4,6) or target['kind'] not in ('tcp','sni') or not isinstance(target['port'],int) or not 1<=target['port']<=65535 or not isinstance(host,str) or len(host)>253 or any(c in host for c in '/\\@?#\r\n '):raise ValueError('target')
         candidates=resolver(host,target['port'],family,socket.SOCK_STREAM)
@@ -40,7 +54,7 @@ def run_plan(plan):
         identity=target.get('id') if isinstance(target,dict) else None
         if not isinstance(identity,str) or len(identity)>80:return None
         try:
-            result=subprocess.run([sys.executable,str(Path(__file__).resolve())],input=json.dumps(target),text=True,capture_output=True,timeout=5)
+            result=subprocess.run([sys.executable,str(Path(__file__).resolve())],input=json.dumps(target),text=True,capture_output=True,timeout=20 if target.get('kind')=='connectivity' else 5)
             data=json.loads(result.stdout[:4096]) if result.returncode==0 else {'ok':None,'code':'probe_failed'}
         except subprocess.TimeoutExpired:data={'ok':False,'code':'probe_timeout'}
         except (OSError,ValueError):data={'ok':None,'code':'probe_failed'}

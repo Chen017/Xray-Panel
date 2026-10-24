@@ -1,5 +1,7 @@
 #!/bin/bash
 
+. "${BASH_SOURCE[0]%/*}/network_probe.sh"
+
 # DNS and HTTPS run concurrently; no sequential ASN/API request on menu startup.
 _cdn_dns_records() (
     local domain="$1" work ns n=0 pid
@@ -111,24 +113,20 @@ _check_ip_blocked() {
     fi
     _ov_ip_blocked="检测中..."
     _ov_ip_warning=""
-    local check_urls=(
-        "sh-cm-dualstack.ip.zstaticcdn.com/80"
-        "sh-cu-dualstack.ip.zstaticcdn.com/80"
-        "sh-ct-dualstack.ip.zstaticcdn.com/80"
-    )
-    local is_blocked=1
-    for url in "${check_urls[@]}"; do
-        if timeout 2 bash -c "echo > /dev/tcp/$url" &>/dev/null; then
-            is_blocked=0
-            break
-        fi
-    done
-    if [[ $is_blocked == 0 ]]; then
+    local result
+    result=$(probe_network) || { _ov_ip_blocked="${yellow}检测失败${none}"; _ov_global_status="${yellow}检测失败${none}"; return; }
+    if [[ $result == *'"domestic":true'* ]]; then
         _ov_ip_blocked="${green}✓${none} "
     else
         _ov_ip_blocked="${red}✗${none} "
-        _ov_ip_warning="  [警告] 当前服务器 IP 的部分国内测速节点超时，可能已被 GFW 阻断！\n"
     fi
+    if [[ $result == *'"global":true'* ]]; then _ov_global_status="${green}✓${none} "
+    else _ov_global_status="${red}✗${none} "; fi
+    case "$result" in
+        *'"code":"domestic_unreachable"'*) _ov_ip_warning="  [警告] 三个国内目标均不可达，Cloudflare 可达：疑似国内连通异常，不能据此确认节点入站被墙。\n" ;;
+        *'"code":"network_unreachable"'*) _ov_ip_warning="  [警告] 国内目标和 Cloudflare 均不可达，请检查服务器网络、路由和防火墙。\n" ;;
+        *'"code":"global_unreachable"'*) _ov_ip_warning="  [警告] 国内目标可达，Cloudflare 对照失败，请检查境外连通性。\n" ;;
+    esac
 }
 
 _check_sni_status() {

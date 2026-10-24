@@ -119,7 +119,7 @@ misc_menu() {
             if prompt_confirm "是否检测网络与目标域名？" n; then
                 unset _ov_ip_blocked _ov_sni_checked
                 _get_overview
-                echo -e "  GFW放行: $_ov_ip_blocked"
+                echo -e "  国内连通: $_ov_ip_blocked   Cloudflare: $_ov_global_status"
                 echo -e "  v4 SNI: $_ov_v4_sni_status$_ov_v4_cdn_status$_ov_v4_sni"
                 echo -e "  v6 SNI: $_ov_v6_sni_status$_ov_v6_cdn_status$_ov_v6_sni"
                 echo -ne "$_ov_ip_warning$_ov_sni_warning$_ov_cdn_warning"
@@ -170,7 +170,6 @@ misc_menu() {
         7)
             load panel.sh
             panel_agent_menu
-            pause
             ;;
         esac
     done
@@ -199,7 +198,7 @@ is_main_menu() {
             echo -e "  ${cyan}[ v4 ]${none} SNI: $_ov_v4_sni_status$_ov_v4_cdn_status${green}$_ov_v4_sni${none}   SIDs: ${green}$_ov_v4_sids${none}"
             echo -e "  ${cyan}[ v6 ]${none} SNI: $_ov_v6_sni_status$_ov_v6_cdn_status${green}$_ov_v6_sni${none}   SIDs: ${green}$_ov_v6_sids${none}"
             echo -e "  ${cyan}[高级]${none} 路径: ${green}$_ov_path${none}   公钥: ${green}$short_pbk${none}"
-            echo -e "  ${cyan}[状态]${none} GFW放行: $_ov_ip_blocked   防火墙: ${green}$_ov_fw_ports${none}   占用: ${green}$_ov_sys_ports${none}"
+            echo -e "  ${cyan}[状态]${none} 国内连通: $_ov_ip_blocked   Cloudflare: $_ov_global_status   防火墙: ${green}$_ov_fw_ports${none}   占用: ${green}$_ov_sys_ports${none}"
             [[ -z $_ov_relay_status ]] || echo -e "  $_ov_relay_status"
         elif [[ -f "$is_conf_dir/99_relay_in.json" ]]; then
             local l_port l_ext tuuid

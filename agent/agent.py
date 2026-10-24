@@ -208,7 +208,7 @@ class Agent:
             except (OSError, ValueError): bundle = None
             self.cached_firewall = system_report.firewall(bundle)
             self.firewall_at = now
-        return {'installed': installed, 'version': version, 'scriptVersion': script_version, 'active': status.strip() == 'active', 'hostname': socket.gethostname(), 'listen4': listen4, 'agentVersion': json.loads((HERE.parent / 'package.json').read_text())['version'], 'monitorProtocol': 1, 'monitor': getattr(self, 'monitor_result', None), 'platform': sys.platform, 'network': self.cached_network, 'firewall': self.cached_firewall}
+        return {'installed': installed, 'version': version, 'scriptVersion': script_version, 'active': status.strip() == 'active', 'hostname': socket.gethostname(), 'listen4': listen4, 'agentVersion': json.loads((HERE.parent / 'package.json').read_text())['version'], 'monitorProtocol': 2, 'monitor': getattr(self, 'monitor_result', None), 'platform': sys.platform, 'network': self.cached_network, 'firewall': self.cached_firewall}
 
     def snapshot(self):
         """A damaged configuration must not disconnect the management channel."""

@@ -7,4 +7,4 @@ import '@mantine/notifications/styles.css';
 import { theme } from './theme';
 import { App } from './panel';
 import './style.css';
-createRoot(document.getElementById('root')!).render(<React.StrictMode><MantineProvider theme={theme} defaultColorScheme="dark"><Notifications position="top-right"/><App/></MantineProvider></React.StrictMode>);
+createRoot(document.getElementById('root')!).render(<React.StrictMode><MantineProvider theme={theme} defaultColorScheme="auto"><Notifications position="top-right"/><App/></MantineProvider></React.StrictMode>);

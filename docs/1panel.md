@@ -21,7 +21,7 @@
 在 1Panel 的本机 root Bash 终端执行：
 
 ```bash
-(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.3.1/deploy/bootstrap.sh -o "$w"; bash "$w")
+(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.3.2/deploy/bootstrap.sh -o "$w"; bash "$w")
 ```
 
 选择「安装 Panel」，依次输入管理、订阅、Agent 的 HTTPS 域名。程序拉取预构建 Docker 镜像并启动，不需要上传源码、安装 Node 运行环境或手动构建镜像。

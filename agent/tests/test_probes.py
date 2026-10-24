@@ -1,4 +1,4 @@
-import concurrent.futures,importlib.util,json,socket,ssl,subprocess,tempfile,threading,unittest
+import concurrent.futures,importlib.util,json,os,socket,ssl,subprocess,tempfile,threading,unittest
 from pathlib import Path
 from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('network_probes',Path(__file__).resolve().parents[1]/'probes.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
@@ -41,4 +41,29 @@ class ProbeTests(unittest.TestCase):
   target=self.target('tcp')
   with patch.object(m.subprocess,'run',side_effect=subprocess.TimeoutExpired('fixture',5)):
    result=m.run_plan({'id':'test','targets':[target]});self.assertFalse(result['results'][0]['ok']);self.assertEqual(result['results'][0]['code'],'probe_timeout')
+ def test_shared_script_results_and_failures_are_bounded(self):
+  for domestic,global_ok,code in [(True,True,'ok'),(False,True,'domestic_unreachable'),(True,False,'global_unreachable'),(False,False,'network_unreachable')]:
+   completed=subprocess.CompletedProcess([],0,json.dumps({'domestic':domestic,'global':global_ok,'code':'untrusted'}),'')
+   with patch.object(m.subprocess,'run',return_value=completed) as run:
+    result=m.probe_one({'kind':'connectivity'});self.assertEqual(result['code'],code);self.assertEqual(result['ok'],domestic and global_ok)
+    self.assertEqual(run.call_args.args[0],['bash',str(m.NETWORK_SCRIPT),'--json']);self.assertEqual(run.call_args.kwargs['timeout'],15)
+  for value in ['bad',json.dumps({'domestic':'false','global':True}),json.dumps([])]:
+   with patch.object(m.subprocess,'run',return_value=subprocess.CompletedProcess([],0,value,'')):
+    self.assertIsNone(m.probe_network()['ok'])
+  with patch.object(m.subprocess,'run',side_effect=subprocess.TimeoutExpired('fixture',15)):
+   self.assertIsNone(m.probe_network()['ok'])
+ def test_actual_bash_module_round_trip_uses_only_fixed_destinations(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   fake=Path(tmp)/'timeout';fake.write_text('''#!/bin/bash
+for last; do :; done
+case "$last" in
+ sh-*.ip.zstaticcdn.com) [[ $TEST_DOMESTIC == true ]] ;;
+ 1.1.1.1|1.0.0.1) [[ $TEST_GLOBAL == true ]] ;;
+ *) exit 77 ;;
+esac
+''');fake.chmod(0o755)
+   for domestic in (True,False):
+    for global_ok in (True,False):
+     with patch.dict(os.environ,{'PATH':tmp+os.pathsep+os.environ['PATH'],'TEST_DOMESTIC':str(domestic).lower(),'TEST_GLOBAL':str(global_ok).lower()}):
+      result=m.probe_network();self.assertIs(result['domestic'],domestic);self.assertIs(result['global'],global_ok)
 if __name__=='__main__':unittest.main()

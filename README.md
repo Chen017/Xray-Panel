@@ -4,13 +4,15 @@
 
 **Web 修改 → Agent 校验与部署 → 成功后发布订阅 → Mihomo 自动更新。** 控制中心离线时，各 VPS 继续运行已有配置。
 
+界面默认跟随系统切换深色 / 浅色，右上角可手动选择。Telegram 检测复用 Script 的国内三网 / Cloudflare 自检，不需要额外测点 Agent；仅提示出站连通异常，详见 [告警配置](docs/telegram.md)。
+
 ## 可以做什么
 
 - 管理节点、导入现有配置，修改 SNI、端口、UUID、REALITY、XHTTP、分流规则和完整 JSON。
 - 配置线路 / 多落地互联、NAT 端口和故障转移；关联落地的地址变化自动排队部署。
 - 查看任务、日志、防火墙快照，执行服务控制、诊断、更新及脚本运维操作。
 - 每设备独立 Token、age 公钥和节点 / 出口 UUID，支持授权、撤销与轮换。
-- 检查 SNI / TLS，使用大陆与境外测点对照并发送 Telegram 告警。
+- 检查 SNI / TLS，复用节点本机的国内三网 / Cloudflare 自检并发送 Telegram 告警，无需额外测点。
 
 界面精简自 Remnawave 前端，后端和 Agent 专门适配本脚本；无需 Remnawave 后端、PostgreSQL 或 Redis，不包含套餐与计费系统。功能对应位置见 [功能对照](docs/feature-coverage.md)。
 
@@ -22,7 +24,7 @@
 | 配置三个域名的 Zero Trust、源站保护 | [Cloudflare 配置](docs/cloudflare.md) |
 | 接入已有 Xray VPS | 见下方「接入已有 Xray VPS」 |
 | 保留本地规则，只自动更新节点 | [Mihomo 订阅](docs/mihomo.md) |
-| 配置通知和检测测点 | [Telegram 告警](docs/telegram.md) |
+| 配置通知和节点自检 | [Telegram 告警](docs/telegram.md) |
 
 ## 安装 Panel
 
@@ -31,7 +33,7 @@
 在该 VPS 的 Bash 终端执行，选择「安装 Panel」，按提示输入三个 HTTPS 域名：
 
 ```bash
-(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.3.1/deploy/bootstrap.sh -o "$w"; bash "$w")
+(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.3.2/deploy/bootstrap.sh -o "$w"; bash "$w")
 ```
 
 一个容器提供三个独立入口，共用加密 SQLite 数据库：
@@ -77,7 +79,7 @@
 | 日志 | `xray-panel panel logs` | `xray-panel agent logs` |
 | 卸载 | `xray-panel panel uninstall` | `xray-panel agent uninstall` |
 
-更新默认获取最新正式 Release，可加 `--version 1.3.1` 指定版本。Panel 更新前备份数据库和配置，失败恢复；沿用已有 Compose 项目、数据卷和密钥，不要在 1Panel 重建第二套项目。生成的编排是 `/opt/xray-panel-manager/panel.compose.yaml`。
+更新默认获取最新正式 Release，可加 `--version 1.3.2` 指定版本。Panel 更新前备份数据库和配置，失败恢复；沿用已有 Compose 项目、数据卷和密钥，不要在 1Panel 重建第二套项目。生成的编排是 `/opt/xray-panel-manager/panel.compose.yaml`。
 
 Panel 与 Agent 分别更新。Agent 重装 / 更新保留相同节点身份、CF 凭据及自定义目录，拒绝覆盖不同节点 ID；轮换 Agent Token 后，重新运行安装并粘贴同节点的新接入信息即可。
 
