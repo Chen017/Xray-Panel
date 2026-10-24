@@ -3,6 +3,37 @@ from pathlib import Path
 from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('network_probes',Path(__file__).resolve().parents[1]/'probes.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 class ProbeTests(unittest.TestCase):
+ def test_overseas_uses_only_fixed_cloudflare_targets_with_tcp_fallback(self):
+  class Connected:
+   def __enter__(self):return self
+   def __exit__(self,*args):pass
+  calls=[]
+  def connect(address,timeout):calls.append(address);return Connected()
+  with patch.object(m.subprocess,'run',return_value=subprocess.CompletedProcess([],1)) as ping:
+   result=m.probe_overseas(connector=connect)
+  self.assertEqual(result,{'ok':True,'global':True,'code':'ok'})
+  self.assertEqual(calls,[('1.1.1.1',443)])
+  self.assertEqual(ping.call_args.args[0],['ping','-n','-c','1','-W','2','1.1.1.1'])
+  calls=[]
+  def fail(address,timeout):calls.append(address);raise TimeoutError()
+  with patch.object(m.subprocess,'run',side_effect=FileNotFoundError()) as ping:
+   result=m.probe_overseas(connector=fail)
+  self.assertEqual(result,{'ok':False,'global':False,'code':'global_unreachable'})
+  self.assertEqual(calls,[('1.1.1.1',443),('1.0.0.1',443)])
+  self.assertTrue(all(call.args[0][-1] in ('1.1.1.1','1.0.0.1') for call in ping.call_args_list))
+ def test_landing_guard_never_executes_a_stale_domestic_plan(self):
+  plan={'id':'stale','targets':[{'id':'domestic','kind':'connectivity'}]}
+  with patch.object(m.subprocess,'run',side_effect=AssertionError('domestic probe executed')):
+   result=m.run_plan(plan,landing=True)
+  self.assertEqual(result['results'],[{'id':'domestic','ok':None,'code':'domestic_probe_disabled'}])
+ def test_tcp_connects_to_public_endpoint_without_a_tls_handshake(self):
+  class Connected:
+   def __enter__(self):return self
+   def __exit__(self,*args):pass
+  calls=[]
+  def connect(address,timeout):calls.append((address,timeout));return Connected()
+  result=m.probe_one(self.target('tcp'),resolver=self.resolver,connector=connect,context_factory=lambda:self.fail('TCP probe requested TLS'))
+  self.assertTrue(result['ok']);self.assertEqual(calls,[(('8.8.8.8',443),2)])
  def target(self,kind='sni'):return {'kind':kind,'host':'localhost','port':443,'family':4,'id':'fixture'}
  def resolver(self,*args):return [(socket.AF_INET,socket.SOCK_STREAM,6,'',('8.8.8.8',443))]
  def test_private_dns_and_invalid_target_never_connect(self):

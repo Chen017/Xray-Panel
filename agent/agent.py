@@ -208,7 +208,7 @@ class Agent:
             except (OSError, ValueError): bundle = None
             self.cached_firewall = system_report.firewall(bundle)
             self.firewall_at = now
-        return {'installed': installed, 'version': version, 'scriptVersion': script_version, 'active': status.strip() == 'active', 'hostname': socket.gethostname(), 'listen4': listen4, 'agentVersion': json.loads((HERE.parent / 'package.json').read_text())['version'], 'monitorProtocol': 2, 'monitor': getattr(self, 'monitor_result', None), 'platform': sys.platform, 'network': self.cached_network, 'firewall': self.cached_firewall}
+        return {'installed': installed, 'version': version, 'scriptVersion': script_version, 'active': status.strip() == 'active', 'hostname': socket.gethostname(), 'listen4': listen4, 'agentVersion': json.loads((HERE.parent / 'package.json').read_text())['version'], 'monitorProtocol': 3, 'monitor': getattr(self, 'monitor_result', None), 'platform': sys.platform, 'network': self.cached_network, 'firewall': self.cached_firewall}
 
     def snapshot(self):
         """A damaged configuration must not disconnect the management channel."""
@@ -311,7 +311,12 @@ class Agent:
             self.request('/v1/agent/jobs/' + job['id'] + '/result', {**result, 'lease': job['lease']})
             print('job', job['id'], 'succeeded' if result['ok'] else 'failed', flush=True)
         if response.get('monitorPlan'):
-            self.monitor_result = probes.run_plan(response['monitorPlan'])
+            # Re-read after a deployment: the role may have changed during this
+            # heartbeat. Unknown/broken configuration also fails closed for China.
+            current, _ = self.snapshot()
+            relay=(current or {}).get('files',{}).get('relay.json')
+            landing=current is None or isinstance(relay,dict) and relay.get('role')=='landing'
+            self.monitor_result = probes.run_plan(response['monitorPlan'],landing=landing)
 
     def run(self):
         while True:

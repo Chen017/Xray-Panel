@@ -4,6 +4,20 @@ from pathlib import Path
 
 NETWORK_SCRIPT=Path(__file__).resolve().parent.parent/'vendor/xray-script/src/network_probe.sh'
 
+def probe_overseas(connector=socket.create_connection):
+    # Landing nodes only contact these overseas targets. Never invoke the shared
+    # domestic probe; ICMP filtering alone is not sufficient evidence of failure.
+    for address in ('1.1.1.1','1.0.0.1'):
+        try:
+            if subprocess.run(['ping','-n','-c','1','-W','2',address],capture_output=True,timeout=3).returncode==0:
+                return {'ok':True,'global':True,'code':'ok'}
+        except (OSError,subprocess.TimeoutExpired):pass
+        try:
+            with connector((address,443),timeout=2):
+                return {'ok':True,'global':True,'code':'ok'}
+        except OSError:pass
+    return {'ok':False,'global':False,'code':'global_unreachable'}
+
 def probe_network():
     try:
         result=subprocess.run(['bash',str(NETWORK_SCRIPT),'--json'],capture_output=True,text=True,timeout=15)
@@ -25,6 +39,7 @@ def probe_one(target,resolver=socket.getaddrinfo,connector=socket.create_connect
     start=time.monotonic()
     try:
         if target.get('kind')=='connectivity':return probe_network()
+        if target.get('kind')=='overseas':return probe_overseas()
         host=target['host'];family=socket.AF_INET6 if target['family']==6 else socket.AF_INET
         if target['family'] not in (4,6) or target['kind'] not in ('tcp','sni') or not isinstance(target['port'],int) or not 1<=target['port']<=65535 or not isinstance(host,str) or len(host)>253 or any(c in host for c in '/\\@?#\r\n '):raise ValueError('target')
         candidates=resolver(host,target['port'],family,socket.SOCK_STREAM)
@@ -48,13 +63,14 @@ def probe_one(target,resolver=socket.getaddrinfo,connector=socket.create_connect
     except (KeyError,TypeError,ValueError):return {'ok':None,'code':'invalid_target'}
     except OSError:return {'ok':False,'code':'network_failed'}
 
-def run_plan(plan):
+def run_plan(plan,landing=False):
     if not isinstance(plan,dict) or not isinstance(plan.get('id'),str) or len(plan['id'])>80 or not isinstance(plan.get('targets'),list) or len(plan['targets'])>8:return None
     def check(target):
         identity=target.get('id') if isinstance(target,dict) else None
         if not isinstance(identity,str) or len(identity)>80:return None
+        if landing and target.get('kind')=='connectivity':return {'id':identity,'ok':None,'code':'domestic_probe_disabled'}
         try:
-            result=subprocess.run([sys.executable,str(Path(__file__).resolve())],input=json.dumps(target),text=True,capture_output=True,timeout=20 if target.get('kind')=='connectivity' else 5)
+            result=subprocess.run([sys.executable,str(Path(__file__).resolve())],input=json.dumps(target),text=True,capture_output=True,timeout=20 if target.get('kind') in ('connectivity','overseas') else 5)
             data=json.loads(result.stdout[:4096]) if result.returncode==0 else {'ok':None,'code':'probe_failed'}
         except subprocess.TimeoutExpired:data={'ok':False,'code':'probe_timeout'}
         except (OSError,ValueError):data={'ok':None,'code':'probe_failed'}

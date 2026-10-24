@@ -139,9 +139,23 @@ class AgentSafetyTests(unittest.TestCase):
         with patch.object(agent,'request',side_effect=[{'job':None,'monitorPlan':plan},{'job':None}]) as request, patch.object(module.probes,'run_plan',return_value=result) as check:
             agent.once()
             agent.once()
-        check.assert_called_once_with(plan)
+        check.assert_called_once_with(plan,landing=False)
         self.assertEqual(request.call_args_list[1].args[1]['report']['monitor'],result)
         self.assertEqual(module.read_bundle(self.root),self.bundle)
+
+    def test_monitor_role_is_reread_after_a_job_before_any_domestic_probe(self):
+        module.write_bundle(self.root,self.bundle)
+        agent=self.make_agent()
+        agent.report=lambda:{'installed':True,'monitorProtocol':3}
+        plan={'id':'stale-plan','targets':[{'id':'network','kind':'connectivity'}]}
+        landing={**self.bundle,'files':{**self.bundle['files'],'relay.json':{'role':'landing'}}}
+        def deploy(job):
+            module.write_bundle(self.root,landing)
+            return {'ok':True}
+        agent.execute=deploy
+        with patch.object(agent,'request',side_effect=[{'job':{'id':'fixture-job','lease':'fixture'},'monitorPlan':plan},{}]), patch.object(module.probes,'run_plan',return_value=None) as check:
+            agent.once()
+        check.assert_called_once_with(plan,landing=True)
 
     @unittest.skipIf(__import__('os').name == 'nt', 'Symlink creation requires Linux permissions')
     def test_symlink_rejected(self):
