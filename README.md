@@ -33,7 +33,7 @@
 在该 VPS 的 Bash 终端执行，选择「安装 Panel」，按提示输入三个 HTTPS 域名：
 
 ```bash
-(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.3.2/deploy/bootstrap.sh -o "$w"; bash "$w")
+(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.3.3/deploy/bootstrap.sh -o "$w"; bash "$w")
 ```
 
 一个容器提供三个独立入口，共用加密 SQLite 数据库：
@@ -63,7 +63,7 @@
 
 在「设备与订阅」为设备生成 age 密钥，选择节点、出口与连接模式，保存仅显示一次的 Token / 私钥配置。**设备授权会触发独立 UUID 的自动部署**；任务成功后，再把生成的 `proxy-providers` 合并到本地 Mihomo 配置。
 
-每台设备的「节点命名」可分别设置各出口、模式和配置文件的完整显示名称；保存后刷新客户端订阅即可，留空沿用默认名称，无需重新部署 Xray。
+每台设备的「节点命名与排序」可分别设置各出口、模式和配置文件的完整名称，用上下箭头调整订阅顺序；保存后刷新客户端 provider 即可，名称和顺序可分别恢复默认，无需重新部署 Xray 或更新 Agent。
 
 本地 DNS、策略组与分流规则继续保留。完整例子见 [Mihomo 教程](docs/mihomo.md)。设备 Token 撤销立即阻止拉取；VPS 上的 UUID 删除需等待 Agent 同步，离线节点不会立即生效。
 
@@ -79,7 +79,7 @@
 | 日志 | `xray-panel panel logs` | `xray-panel agent logs` |
 | 卸载 | `xray-panel panel uninstall` | `xray-panel agent uninstall` |
 
-更新默认获取最新正式 Release，可加 `--version 1.3.2` 指定版本。Panel 更新前备份数据库和配置，失败恢复；沿用已有 Compose 项目、数据卷和密钥，不要在 1Panel 重建第二套项目。生成的编排是 `/opt/xray-panel-manager/panel.compose.yaml`。
+更新默认获取最新正式 Release，可加 `--version 1.3.3` 指定版本。Panel 更新前备份数据库和配置，失败恢复；沿用已有 Compose 项目、数据卷和密钥，不要在 1Panel 重建第二套项目。生成的编排是 `/opt/xray-panel-manager/panel.compose.yaml`。
 
 Panel 与 Agent 分别更新。Agent 重装 / 更新保留相同节点身份、CF 凭据及自定义目录，拒绝覆盖不同节点 ID；轮换 Agent Token 后，重新运行安装并粘贴同节点的新接入信息即可。
 

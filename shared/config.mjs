@@ -152,6 +152,22 @@ export function providerNameEntries(node,applied,device,master) {
 export function providerLinks(node,applied,device,master) {
   return providerEntries(node,applied,device,master).map(({proxy,settings})=>vlessLink(proxy,settings));
 }
+function deviceProviderEntries(nodes,device,master) {
+  if(device.revoked)return [];
+  const entries=nodes.filter(n=>n.enabled&&n.applied).flatMap(n=>providerEntries(n,n.applied,device,master)).map((entry,defaultIndex)=>({...entry,defaultIndex}));
+  const ranks=new Map((device.subscriptionOrder??[]).map((key,index)=>[key,index]));
+  return entries.sort((a,b)=>(ranks.get(a.key)??Number.MAX_SAFE_INTEGER)-(ranks.get(b.key)??Number.MAX_SAFE_INTEGER)||a.defaultIndex-b.defaultIndex);
+}
+export function deviceProviderProxies(nodes,device,master){return deviceProviderEntries(nodes,device,master).map(({proxy})=>proxy);}
+export function deviceProviderLinks(nodes,device,master){return deviceProviderEntries(nodes,device,master).map(({proxy,settings})=>vlessLink(proxy,settings));}
+export function deviceProviderNameEntries(nodes,device,master){return deviceProviderEntries(nodes,device,master).map(({proxy,settings,...entry})=>({...entry,name:proxy.name}));}
+export function mergeSubscriptionOrder(previous,requested,visible) {
+  if(!requested.length)return [];
+  const active=new Set(visible),included=new Set(requested),next=[...requested,...visible.filter(key=>!included.has(key))];let cursor=0;
+  // Keep temporarily unpublished entries in their previous slots as visible entries move.
+  const merged=(previous??[]).map(key=>active.has(key)?next[cursor++]:key);
+  return [...merged,...next.slice(cursor)];
+}
 export function vlessLink(proxy,settings) {
   const p=proxy,q=new URLSearchParams({encryption:'none',security:'reality',sni:p.servername,fp:p['client-fingerprint'],pbk:p['reality-opts']['public-key'],sid:p['reality-opts']['short-id'],alpn:(p.alpn??['h2']).join(','),type:p.network==='xhttp'?'xhttp':'tcp'});
   if(p.network==='tcp')q.set('flow','xtls-rprx-vision');
