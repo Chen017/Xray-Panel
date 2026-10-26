@@ -8,6 +8,7 @@
 
 - 🌐 节点管理：导入已有配置，编辑 REALITY / XHTTP、分流规则和完整 JSON；支持线路 / 多落地互联、NAT 与故障转移。
 - 🔗 统一订阅：节点名称与顺序统一管理，所有设备共用；每台设备拥有独立 Token、age 公钥和节点 / 出口 UUID。
+- ⚡ 下行窗口：按设备、订阅节点独立设置 XHTTP 双栈分离的 H2 接收窗口，支持 M 单位输入与字节转换；需要支持该字段的 Mihomo fork。
 - 🛠️ 部署运维：配置先校验再应用，失败自动回滚；支持任务、日志、防火墙快照、服务控制与脚本更新。
 - 🔔 状态告警：复用 Script 的国内三网 / Cloudflare 自检，支持 Telegram 连续失败、恢复及 SNI 告警，并独立检测中转与落地双向 TCP、落地海外连通；落地不检测国内目标。
 - 🎨 界面主题：默认跟随系统，也可手动切换深色 / 浅色。
@@ -29,7 +30,7 @@
 Panel 适用于 Debian / Ubuntu 建站 VPS，需要 root、systemd、Python ≥ 3.10，并能访问 GitHub 和 GHCR。安装器补齐依赖，拉取 amd64 / arm64 Docker 镜像。
 
 ```bash
-(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.3.6/deploy/bootstrap.sh -o "$w"; bash "$w")
+(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.3.7/deploy/bootstrap.sh -o "$w"; bash "$w")
 ```
 
 域名、反向代理和 Access 按上方教程配置。
@@ -44,7 +45,7 @@ Panel 适用于 Debian / Ubuntu 建站 VPS，需要 root、systemd、Python ≥ 
 | 日志 | `xray-panel panel logs` | `xray-panel agent logs` |
 | 卸载 | `xray-panel panel uninstall` | `xray-panel agent uninstall` |
 
-更新默认获取最新正式 Release，可加 `--version 1.3.6` 指定版本。Panel 更新前备份数据库和配置，失败恢复；沿用已有 Compose 项目、数据卷和密钥，不要在 1Panel 重建第二套项目。生成的编排是 `/opt/xray-panel-manager/panel.compose.yaml`。
+更新默认获取最新正式 Release，可加 `--version 1.3.7` 指定版本。Panel 更新前备份数据库和配置，失败恢复；沿用已有 Compose 项目、数据卷和密钥，不要在 1Panel 重建第二套项目。生成的编排是 `/opt/xray-panel-manager/panel.compose.yaml`。
 
 Panel 与 Agent 分别更新。Agent 重装 / 更新保留相同节点身份、CF 凭据及自定义目录，拒绝覆盖不同节点 ID；轮换 Agent Token 后，重新运行安装并粘贴同节点的新接入信息即可。
 

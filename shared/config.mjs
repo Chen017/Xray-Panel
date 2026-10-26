@@ -2,6 +2,7 @@
 import { createHash, createHmac, generateKeyPairSync,createPrivateKey,createPublicKey } from 'node:crypto';
 import { isIP } from 'node:net';
 import { z } from 'zod';
+import {H2_WINDOW_MAX} from './h2-window.mjs';
 
 // Numeric hashes use normalized IEEE-754 bytes, avoiding JS/Python JSON float formatting differences.
 export const stable = (v) => {if(typeof v==='number'){if(!Number.isFinite(v))throw Error('配置包含非有限数字');const b=Buffer.alloc(8);b.writeDoubleBE(v===0?0:v);return `n${b.toString('hex')}`;}return v === null || typeof v !== 'object' ? JSON.stringify(v) : Array.isArray(v) ? `[${v.map(stable).join(',')}]` : `{${Object.keys(v).sort().map(k=>`${JSON.stringify(k)}:${stable(v[k])}`).join(',')}}`;};
@@ -139,6 +140,8 @@ function providerEntries(node,applied,device,master,sourceFile) {
     const p={name:customName||defaultName,type:'vless',...transport(family),uuid,udp:true,tfo:true,mptcp:true,'packet-encoding':'xudp',encryption:'none'};
     if(mode.startsWith('vision')){p.network='tcp';p.flow='xtls-rprx-vision';}
     else {p.network='xhttp';p['xhttp-opts']={...mihomoXhttp(s.xhttp),host:s.xhttp.host||sni(family),path:s.path};if(split)p['xhttp-opts']['download-settings']={...transport(down),host:s.xhttp.host||sni(down),path:s.path,'reuse-settings':{'max-concurrency':'8-16','c-max-reuse-times':0,'h-max-request-times':'300-600','h-max-reusable-secs':'2400-3600','h-keep-alive-period':0}};}
+    const window=device.downloadWindows?.[key];
+    if(split&&Number.isInteger(window)&&window>0&&window<=H2_WINDOW_MAX)p['xhttp-opts']['download-settings']['h2-max-receive-buffer-per-stream']=window;
     result.push({proxy:p,settings:s,key,nodeId:node.id,file,route,mode,defaultName,customName});
   }
   return result;

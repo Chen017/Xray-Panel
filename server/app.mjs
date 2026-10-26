@@ -9,6 +9,7 @@ import { z } from 'zod';
 import * as age from 'age-encryption';
 import YAML from 'yaml';
 import {orderNodes} from '../shared/node-order.mjs';
+import {H2_WINDOW_MAX} from '../shared/h2-window.mjs';
 import {nodeNameEntries,assertUniqueNames,migrateSubscriptionNames} from './subscription-names.mjs';
 import {createMonitoring} from './monitoring.mjs';
 import { Store,token,digest,passwordHash,passwordVerify } from './store.mjs';
@@ -24,6 +25,7 @@ const addressSchema=z.object({mode:z.enum(['auto','manual']),value:z.union([host
 const nodeSchema=z.object({name:z.string().trim().min(1).max(80),ipv4:z.union([hostSchema,z.literal('')]).default(''),ipv6:z.union([hostSchema,z.literal('')]).default(''),enabled:z.boolean().default(true),addressPolicy:z.object({ipv4:addressSchema,ipv6:addressSchema}).optional()});
 const grantSchema=z.object({nodeId:idSchema,routes:z.array(z.string().regex(/^(direct|\d{1,6})$/)).min(1).max(33),modes:z.array(z.enum(['split','single4','single6','vision4','vision6'])).min(1).max(5)});
 const deviceSchema=z.object({name:z.string().trim().min(1).max(80),publicKey:z.string().regex(/^age1[023456789acdefghjklmnpqrstuvwxyz]{58}$/),grants:z.array(grantSchema).max(100)});
+const downloadWindowsSchema=z.object({revision:z.number().int().nonnegative(),windows:z.record(z.string().regex(/^[0-9a-f]{40}$/),z.number().int().min(1).max(H2_WINDOW_MAX)).refine(v=>Object.keys(v).length<=5000,'一次最多设置 5000 条窗口')});
 const subscriptionName=z.string().trim().max(120).refine(s=>!/[\x00-\x1f\x7f]/.test(s),'名称不能包含控制字符').refine(s=>!['DIRECT','REJECT','REJECT-DROP','PASS','COMPATIBLE','GLOBAL','Subscription Download'].includes(s),'名称不能使用 Mihomo 或下载策略组保留名称');
 const namesRecord=z.record(z.string().regex(/^[0-9a-f]{40}$/),subscriptionName).refine(v=>Object.keys(v).length<=5000,'一次最多修改 5000 条名称');
 const nodeOrderSchema=z.object({revision:z.number().int().nonnegative(),order:z.array(idSchema).max(10000).refine(ids=>new Set(ids).size===ids.length,'排序包含重复节点')});
@@ -136,6 +138,24 @@ export function createSystem(config) {
   admin.get('/api/jobs',(_,res)=>res.json(store.list('job').sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).slice(0,200).map(({payload,leaseHash,...j})=>j)));
   admin.post('/api/jobs/:id/cancel',(req,res)=>{const j=store.get('job',req.params.id);if(!j||j.status!=='queued')throw error('只能取消尚未领取的任务',409);j.status='cancelled';j.completedAt=now();store.tx(()=>{store.put('job',j.id,j);if(j.action==='deploy'){const n=getNode(j.nodeId);retrySync(n);store.put('node',n.id,n);}});store.audit('job.cancelled',j.nodeId,j.id);res.json({ok:true});});
   admin.get('/api/devices',(_,res)=>res.json(store.list('device').map(publicDevice)));
+  const windowEntries=d=>orderedNodes().flatMap(n=>{
+    const grant=d.grants.find(g=>g.nodeId===n.id);
+    return grant?nodeNameEntries(n,config.masterKey).filter(e=>e.mode==='split'&&grant.modes.includes(e.mode)&&grant.routes.includes(e.route)):[];
+  });
+  admin.get('/api/devices/:id/download-windows',(req,res)=>{
+    const d=getDevice(req.params.id);
+    res.json({revision:d.downloadWindowsRevision??0,windows:d.downloadWindows??{},entries:windowEntries(d)});
+  });
+  admin.put('/api/devices/:id/download-windows',(req,res)=>{
+    const d=getDevice(req.params.id),input=downloadWindowsSchema.parse(req.body);
+    if(d.revoked)throw error('设备已撤销',409);
+    if(input.revision!==(d.downloadWindowsRevision??0))throw error('窗口设置已被另一页面修改，请重新载入',409);
+    const allowed=new Set(windowEntries(d).map(e=>e.key));
+    if(Object.entries(input.windows).some(([key,value])=>!allowed.has(key)&&d.downloadWindows?.[key]!==value))throw error('设备授权或节点配置已变化，请重新载入窗口列表',409);
+    d.downloadWindows=input.windows;d.downloadWindowsRevision=(d.downloadWindowsRevision??0)+1;
+    store.put('device',d.id,d);store.audit('device.download-windows.updated',d.id);
+    res.json({ok:true});
+  });
   // Old browser tabs may still call these routes. Reading is harmless; writes
   // must never reinstate per-device overrides of the shared node order.
   admin.get('/api/devices/:id/names',(req,res)=>{res.json({entries:deviceProviderNameEntries(orderedNodes(),getDevice(req.params.id),config.masterKey)});});
