@@ -20,9 +20,11 @@ const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const version=JSON.parse(readFileSync(path.join(root,'package.json'),'utf8')).version;
 const now=()=>new Date().toISOString();
 const error=(message,status=400)=>Object.assign(Error(message),{status});
-const idSchema=z.string().uuid();
+const idSchema=z.guid();
 const addressSchema=z.object({mode:z.enum(['auto','manual']),value:z.union([hostSchema,z.literal('')]).default('')});
-const nodeSchema=z.object({name:z.string().trim().min(1).max(80),ipv4:z.union([hostSchema,z.literal('')]).default(''),ipv6:z.union([hostSchema,z.literal('')]).default(''),enabled:z.boolean().default(true),addressPolicy:z.object({ipv4:addressSchema,ipv6:addressSchema}).optional()});
+const nodeFields={name:z.string().trim().min(1).max(80),ipv4:z.union([hostSchema,z.literal('')]),ipv6:z.union([hostSchema,z.literal('')]),enabled:z.boolean(),addressPolicy:z.object({ipv4:addressSchema,ipv6:addressSchema}).optional()};
+const nodeSchema=z.object({...nodeFields,ipv4:nodeFields.ipv4.default(''),ipv6:nodeFields.ipv6.default(''),enabled:nodeFields.enabled.default(true)});
+const nodePatchSchema=z.object(nodeFields).partial();
 const grantSchema=z.object({nodeId:idSchema,routes:z.array(z.string().regex(/^(direct|\d{1,6})$/)).min(1).max(33),modes:z.array(z.enum(['split','single4','single6','vision4','vision6'])).min(1).max(5)});
 const deviceSchema=z.object({name:z.string().trim().min(1).max(80),publicKey:z.string().regex(/^age1[023456789acdefghjklmnpqrstuvwxyz]{58}$/),grants:z.array(grantSchema).max(100)});
 const downloadWindowsSchema=z.object({revision:z.number().int().nonnegative(),windows:z.record(z.string().regex(/^[0-9a-f]{40}$/),z.number().int().min(1).max(H2_WINDOW_MAX)).refine(v=>Object.keys(v).length<=5000,'一次最多设置 5000 条窗口')});
@@ -36,8 +38,9 @@ const MAX_BACKUP_RECORDS=100000;
 
 export function createSystem(config) {
   const store=new Store(config.dbPath,config.masterKey);
+  const maintenance=()=>existsSync(path.join(path.dirname(config.dbPath),'.panel-maintenance'));
   store.tx(()=>migrateSubscriptionNames(store,config.masterKey));
-  const monitoring=createMonitoring(store,{fetchImpl:config.monitorFetch,clock:config.monitorClock});
+  const monitoring=createMonitoring(store,{fetchImpl:config.monitorFetch,clock:config.monitorClock,paused:maintenance});
   if(!store.get('system','admin')){
     if((config.password??'').length<16)throw Error('首次启动需要至少 16 字符的 PANEL_ADMIN_PASSWORD');
     store.put('system','admin',{hash:passwordHash(config.password)});
@@ -47,6 +50,7 @@ export function createSystem(config) {
   const orderedNodes=()=>orderNodes(store.list('node'),store.get('system','node-order')?.order);
   const nodeOrderPresentation=()=>{const nodes=orderedNodes();return {revision:store.get('system','node-order')?.revision??0,order:nodes.map(n=>n.id),defaultOrder:orderNodes(nodes).map(n=>n.id),nodes:nodes.map(({id,name,enabled})=>({id,name,enabled}))};};
   const busy=id=>store.list('job').find(j=>j.nodeId===id&&['queued','running'].includes(j.status));
+  const canAbandon=j=>j.status==='running'&&Number.isFinite(j.leaseUntil)&&j.leaseUntil<=Date.now();
   const publicNode=n=>{const {agentHash,...safe}=n;let hasDraftChanges=false,settings=null;try{settings=n.draft?readSettings(n.draft):null;hasDraftChanges=!!n.draft&&!!n.applied&&hashBundle(compileDevices(resolveLinkedAddresses(n.draft,store.list('node')),n,store.list('device'),config.masterKey))!==hashBundle(n.applied);}catch{hasDraftChanges=true;}return {...safe,addressPolicy:addressPolicy(n),settings,hasDraftChanges,online:!!n.lastSeen&&Date.now()-Date.parse(n.lastSeen)<45000};};
   const publicDevice=d=>{const {tokenHash,...safe}=d;return safe;};
   function queue(n,action,payload={},source='admin') {
@@ -85,7 +89,7 @@ export function createSystem(config) {
       store.put('node',n.id,n);
     }
   }
-  const baseApp=(largeRestore=false)=>{const app=express();app.disable('x-powered-by');app.set('trust proxy',false);app.use(helmet({contentSecurityPolicy:{directives:{defaultSrc:["'self'"],scriptSrc:["'self'"],styleSrc:["'self'","'unsafe-inline'"],imgSrc:["'self'","data:"],connectSrc:["'self'"],fontSrc:["'self'","data:"],objectSrc:["'none'"],frameAncestors:["'none'"]}},strictTransportSecurity:config.secure?undefined:false}));app.use((req,res,next)=>{res.set('Cache-Control','no-store');next();});const parse=express.json({limit:'2mb',strict:true});app.use((req,res,next)=>largeRestore&&req.method==='POST'&&req.path==='/api/restore'?next():parse(req,res,next));return app;};
+  const baseApp=(largeRestore=false)=>{const app=express();app.disable('x-powered-by');app.use((req,res,next)=>{if(maintenance()&&!['/api/health','/health'].includes(req.path)){res.set('Retry-After','30');return res.status(503).json({error:'面板正在升级，请稍后重试'});}next();});app.set('trust proxy',false);app.use(helmet({contentSecurityPolicy:{directives:{defaultSrc:["'self'"],scriptSrc:["'self'"],styleSrc:["'self'","'unsafe-inline'"],imgSrc:["'self'","data:"],connectSrc:["'self'"],fontSrc:["'self'","data:"],objectSrc:["'none'"],frameAncestors:["'none'"]}},strictTransportSecurity:config.secure?undefined:false}));app.use((req,res,next)=>{res.set('Cache-Control','no-store');next();});const parse=express.json({limit:'2mb',strict:true,inflate:false});app.use((req,res,next)=>largeRestore&&req.method==='POST'&&req.path==='/api/restore'?next():parse(req,res,next));return app;};
   const finish=app=>app.use((err,req,res,next)=>{const status=err instanceof z.ZodError?400:err.status??500;res.status(status).json({error:status===500?'内部错误，请查看服务日志':err instanceof z.ZodError?err.issues.map(i=>`${i.path.join('.')}: ${i.message}`).join('；'):err.message});if(status===500)console.error(err.message);});
   const admin=baseApp(true),subscription=baseApp(),agent=baseApp();
   admin.get('/api/health',(_,res)=>res.json({ok:true,service:'admin',version}));subscription.get('/health',(_,res)=>res.json({ok:true,service:'subscription',version}));agent.get('/health',(_,res)=>res.json({ok:true,service:'agent',version}));
@@ -118,7 +122,7 @@ export function createSystem(config) {
     res.json(nodeOrderPresentation());
   });
   admin.post('/api/nodes',(req,res)=>{const value=nodeSchema.parse(req.body),secret=token(),n={id:randomUUID(),...value,addressPolicy:value.addressPolicy??Object.fromEntries(['ipv4','ipv6'].map(key=>[key,{mode:value[key]?'manual':'auto',value:value[key]}])),agentHash:digest(secret),subscriptionNamingVersion:1,revision:0,createdAt:now(),needsSync:false};store.put('node',n.id,n);store.audit('node.created',n.id);res.status(201).json({node:publicNode(n),agentToken:secret,agentUrl:config.agentOrigin});});
-  admin.patch('/api/nodes/:id',(req,res)=>{const n=getNode(req.params.id),patch=nodeSchema.partial().parse(req.body);n.addressPolicy=addressPolicy(n);for(const key of ['ipv4','ipv6'])if(patch[key]!==undefined&&!patch.addressPolicy)n.addressPolicy[key]={mode:'manual',value:patch[key]};Object.assign(n,patch);for(const key of ['ipv4','ipv6'])n[key]=effectiveAddress(n,key);assertUniqueNames(store.list('node').map(x=>x.id===n.id?n:x),store.list('device'),config.masterKey);store.put('node',n.id,n);refreshLinks();store.audit('node.updated',n.id);res.json(publicNode(n));});
+  admin.patch('/api/nodes/:id',(req,res)=>{const n=getNode(req.params.id),patch=nodePatchSchema.parse(req.body);n.addressPolicy=addressPolicy(n);for(const key of ['ipv4','ipv6'])if(patch[key]!==undefined&&!patch.addressPolicy)n.addressPolicy[key]={mode:'manual',value:patch[key]};Object.assign(n,patch);for(const key of ['ipv4','ipv6'])n[key]=effectiveAddress(n,key);assertUniqueNames(store.list('node').map(x=>x.id===n.id?n:x),store.list('device'),config.masterKey);store.put('node',n.id,n);refreshLinks();store.audit('node.updated',n.id);res.json(publicNode(n));});
   admin.delete('/api/nodes/:id',(req,res)=>{const n=getNode(req.params.id);if(busy(n.id))throw error('请先完成或取消节点任务',409);store.remove('node',n.id);for(const d of store.list('device')){d.grants=d.grants.filter(g=>g.nodeId!==n.id);store.put('device',d.id,d);}store.audit('node.deleted',n.id);res.json({ok:true});});
   admin.post('/api/nodes/:id/agent-token',(req,res)=>{const n=getNode(req.params.id),secret=token();n.agentHash=digest(secret);store.put('node',n.id,n);store.audit('agent.rotated',n.id);res.json({agentToken:secret,nodeId:n.id,agentUrl:config.agentOrigin});});
   admin.post('/api/keys',(_,res)=>res.json({...keypair(),uuid:randomUUID(),shortIds:[randomBytes(4).toString('hex'),randomBytes(8).toString('hex')]}));
@@ -135,7 +139,19 @@ export function createSystem(config) {
   admin.post('/api/nodes/:id/deploy',(req,res)=>{const n=getNode(req.params.id);if(req.body.revision!==n.revision)throw error('配置版本已变化，请重新预览',409);if(!n.draft)throw error('没有配置草稿');res.status(202).json(deploy(n,n.draft));});
   admin.post('/api/nodes/:id/actions',(req,res)=>{const n=getNode(req.params.id),action=actionSchema.parse(req.body.action);if(['uninstall','install-standard','install-landing'].includes(action)&&req.body.confirm!==n.name)throw error('请输入节点名称确认此操作');if(['detect-addresses','firewall-status'].includes(action)&&!n.report?.network)throw error('请先使用 xray-panel agent update 更新该 VPS 的 Agent',409);res.status(202).json(queue(n,action));});
   admin.post('/api/batch',(req,res)=>{const b=z.object({nodeIds:z.array(idSchema).min(1).max(100),action:z.enum(['deploy','inspect','validate','start','stop','restart','update-geodata'])}).parse(req.body);const results=b.nodeIds.map(id=>{try{const n=getNode(id);return{id,job:b.action==='deploy'?deploy(n,n.draft):queue(n,b.action)};}catch(e){return{id,error:e.message};}});res.json(results);});
-  admin.get('/api/jobs',(_,res)=>res.json(store.list('job').sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).slice(0,200).map(({payload,leaseHash,...j})=>j)));
+  admin.get('/api/jobs',(_,res)=>res.json(store.list('job').sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).slice(0,200).map(({payload,leaseHash,...j})=>({...j,canAbandon:canAbandon(j)}))));
+  admin.post('/api/jobs/:id/abandon',(req,res)=>{
+    store.tx(()=>{
+      const j=store.get('job',req.params.id);
+      if(!j||!canAbandon(j))throw error('只能放弃租约已过期的执行中任务',409);
+      j.status='cancelled';j.completedAt=now();j.abandoned=true;
+      j.output='管理员已放弃过期任务，旧租约和迟到回执已失效。此操作不能保证远端进程已经停止；恢复操作前请核对节点当前状态。';
+      delete j.leaseHash;delete j.leaseUntil;store.put('job',j.id,j);
+      const n=getNode(j.nodeId);if(j.action==='deploy'){retrySync(n);store.put('node',n.id,n);}
+      store.audit('job.abandoned',j.nodeId,j.id);
+    });
+    res.json({ok:true});
+  });
   admin.post('/api/jobs/:id/cancel',(req,res)=>{const j=store.get('job',req.params.id);if(!j||j.status!=='queued')throw error('只能取消尚未领取的任务',409);j.status='cancelled';j.completedAt=now();store.tx(()=>{store.put('job',j.id,j);if(j.action==='deploy'){const n=getNode(j.nodeId);retrySync(n);store.put('node',n.id,n);}});store.audit('job.cancelled',j.nodeId,j.id);res.json({ok:true});});
   admin.get('/api/devices',(_,res)=>res.json(store.list('device').map(publicDevice)));
   const windowEntries=d=>orderedNodes().flatMap(n=>{
@@ -183,7 +199,7 @@ export function createSystem(config) {
   admin.get('/api/devices/:id/links',(req,res)=>{const d=getDevice(req.params.id);const links=deviceProviderLinks(orderedNodes(),d,config.masterKey);res.type('text/plain').send(links.join('\n'));});
   admin.get('/api/audit',(_,res)=>res.json(store.audits()));
   admin.get('/api/backup',(_,res)=>{const backup={version:1,createdAt:now(),records:store.db.prepare('SELECT kind,id,data FROM records WHERE kind != ?').all('session')},serialized=JSON.stringify(backup);if(backup.records.length>MAX_BACKUP_RECORDS||Buffer.byteLength(serialized)>MAX_BACKUP_BYTES)throw error('备份超过 64 MiB 或 100,000 条记录，请先归档历史任务后导出',413);store.audit('backup.exported','system');res.attachment('xray-panel-encrypted-backup.json').type('application/json').send(serialized);});
-  admin.post('/api/restore',express.json({limit:MAX_BACKUP_BYTES,strict:true}),(req,res)=>{const backup=z.object({version:z.literal(1),records:z.array(z.object({kind:z.enum(['system','node','device','job','monitor','notification']),id:z.string(),data:z.string()})).max(MAX_BACKUP_RECORDS)}).parse(req.body);if(!backup.records.some(r=>r.kind==='system'&&r.id==='admin'))throw error('备份缺少管理员记录');for(const r of backup.records)store.open(r.data);store.tx(()=>{store.db.exec('DELETE FROM records');const q=store.db.prepare('INSERT INTO records(kind,id,data) VALUES(?,?,?)');for(const r of backup.records)q.run(r.kind,r.id,r.data);migrateSubscriptionNames(store,config.masterKey);});store.audit('backup.restored','system');res.json({ok:true});});
+  admin.post('/api/restore',express.json({limit:MAX_BACKUP_BYTES,strict:true,inflate:false}),(req,res)=>{const backup=z.object({version:z.literal(1),records:z.array(z.object({kind:z.enum(['system','node','device','job','monitor','notification']),id:z.string(),data:z.string()})).max(MAX_BACKUP_RECORDS)}).parse(req.body);if(!backup.records.some(r=>r.kind==='system'&&r.id==='admin'))throw error('备份缺少管理员记录');for(const r of backup.records)store.open(r.data);store.tx(()=>{store.db.exec('DELETE FROM records');const q=store.db.prepare('INSERT INTO records(kind,id,data) VALUES(?,?,?)');for(const r of backup.records)q.run(r.kind,r.id,r.data);migrateSubscriptionNames(store,config.masterKey);});store.audit('backup.restored','system');res.json({ok:true});});
   admin.get('/api/docs',(_,res)=>res.json({readme:readFileSync(path.join(root,'README.md'),'utf8'),nodes:readFileSync(path.join(root,'docs/nodes.md'),'utf8'),cloudflare:readFileSync(path.join(root,'docs/cloudflare.md'),'utf8'),mihomo:readFileSync(path.join(root,'docs/mihomo.md'),'utf8'),telegram:readFileSync(path.join(root,'docs/telegram.md'),'utf8')}));
   admin.get('/source.tar.gz',(_,res)=>{const p=path.join(root,'dist/source.tar.gz');if(!existsSync(p))throw error('请运行 npm run build 生成源码归档',404);res.download('source.tar.gz','xray-panel-source.tar.gz',{root:path.join(root,'dist')});});
   if(existsSync(path.join(root,'dist/index.html'))){admin.use(express.static(path.join(root,'dist'),{index:'index.html'}));admin.get('/{*splat}',(_,res)=>res.sendFile(path.join(root,'dist/index.html')));}
@@ -204,7 +220,7 @@ export function createSystem(config) {
   agent.use('/v1/agent',(req,res,next)=>{const id=req.get('x-node-id'),auth=bearer(req),n=id?store.get('node',id):null;if(!n||!auth||digest(auth)!==n.agentHash)return next(error('Agent 凭据无效',401));req.node=n;next();},rateLimit({windowMs:60000,limit:300,keyGenerator:req=>req.node.id,standardHeaders:'draft-8',legacyHeaders:false}));
   agent.get('/v1/agent/status',(req,res)=>res.json({ok:true,nodeId:req.node.id,version,agentProtocol:1}));
   agent.post('/v1/agent/poll',(req,res)=>store.tx(()=>{
-    let n=getNode(req.node.id);const input=z.object({report:z.record(z.unknown()),bundle:z.any().optional()}).parse(req.body);n.report=input.report;n.lastSeen=now();observeAddresses(n,input.report.network);
+    let n=getNode(req.node.id);const input=z.object({report:z.record(z.string(),z.unknown()),bundle:z.any().optional()}).parse(req.body);n.report=input.report;n.lastSeen=now();observeAddresses(n,input.report.network);
     if(input.bundle){n.observed=validateBundle(input.bundle);n.observedHash=hashBundle(n.observed);if(!n.draft){n.draft=clone(n.observed);n.draftBaseHash=n.observedHash;n.revision++;}}
     store.put('node',n.id,n);monitoring.accept(n,input.report.monitor);refreshLinks();n=store.get('node',n.id);
     if((n.needsSync||n.needsRelaySync)&&!busy(n.id)&&n.observed&&input.bundle&&!n.report.configError&&!n.relaySyncError&&(n.syncRetryAt??0)<=Date.now())deploy(n,n.observed,n.needsSync?'device-sync':'address-sync');
@@ -215,7 +231,7 @@ export function createSystem(config) {
     res.json({job:null,monitorPlan:monitoring.plan(n)});
   }));
   agent.post('/v1/agent/jobs/:id/result',(req,res)=>store.tx(()=>{
-    const j=store.get('job',req.params.id),input=z.object({lease:z.string(),ok:z.boolean(),output:z.string().max(180000).default(''),bundle:z.any().optional(),report:z.record(z.unknown()).optional()}).parse(req.body);
+    const j=store.get('job',req.params.id),input=z.object({lease:z.string(),ok:z.boolean(),output:z.string().max(180000).default(''),bundle:z.any().optional(),report:z.record(z.string(),z.unknown()).optional()}).parse(req.body);
     if(!j||j.nodeId!==req.node.id||j.status!=='running'||digest(input.lease)!==j.leaseHash)throw error('任务租约无效或结果已提交',409);
     const n=getNode(j.nodeId);
     const staleSuccess=input.ok&&j.action==='deploy'&&(n.report?.configError||input.report?.configError||j.leaseObservedHash!==undefined&&![j.payload.expectedHash,j.payload.targetHash].includes(j.leaseObservedHash));

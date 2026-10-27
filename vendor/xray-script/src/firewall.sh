@@ -36,6 +36,8 @@ firewall_sync() {
         done
         (( ! cached )) || return 0
     fi
+    # A partial dual-stack commit must never leave the previous cache valid.
+    rm -f "$is_core_dir/.firewall-signature" || return 1
     for tool in iptables ip6tables; do
         firewall_tool_available "$tool" || continue
         "$tool" -w 5 -N XRAY-SCRIPT 2>/dev/null || "$tool" -w 5 -S XRAY-SCRIPT >/dev/null || return 1

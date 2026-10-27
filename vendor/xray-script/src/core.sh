@@ -271,17 +271,18 @@ _create() {
             _fail "SNI 必须是有效域名，请检查 IPv4/IPv6 目标域名"
             return 1
         }
-        local relay_uuid="" listen4
+        local relay_uuid="" listen4 entry_id
+        entry_id=$(printf '%s' "conf/$is_config_name" | sha256sum | cut -c1-16) || return 1
         listen4=$(node_ipv4_listen_address) || return 1
         if [[ $(relay_get_role) == line ]]; then
             relay_uuid=$(jq -r '.client_uuid // empty' "$is_relay_state_file") || return 1
         fi
-        is_new_json=$(jq -n --argjson port "$port" --arg uuid "$uuid" --arg listen4 "$listen4" \
+        is_new_json=$(jq -n --argjson port "$port" --arg uuid "$uuid" --arg listen4 "$listen4" --arg entry_id "$entry_id" \
             --arg private_key "$is_private_key" --arg public_key "$is_public_key" \
             --arg sni4 "$v4_sni" --arg sni6 "$v6_sni" \
             --arg path "${v4_path:-/api/v3/updates}" --arg relay_uuid "$relay_uuid" \
             --argjson sid4 "${v4_short_ids:-$is_short_ids}" --argjson sid6 "${v6_short_ids:-$is_short_ids}" \
-            -f "$is_sh_dir/src/node.jq") || return 1
+            -f "${is_module_dir:-$is_sh_dir}/src/node.jq") || return 1
         atomic_json "$is_json_file" "$is_new_json" || return 1
         if [[ $(relay_get_role) == line ]]; then
             relay_sync_client_identities || return 1
@@ -351,7 +352,7 @@ _create() {
         }
     ],
     "routing": {
-        "domainStrategy": "IPIfNonMatch",
+        "domainStrategy": "IPOnDemand",
         "rules": [
             {
                 "type": "field",
@@ -702,10 +703,11 @@ rebuild_main_config() {
             (if ($custom | type) == "array" then $custom else [] end) as $c_rules |
             [
                 {"type": "field", "domain": ["geosite:cn"], "outboundTag": "block"},
-                {"type": "field", "ip": ["geoip:cn", "geoip:private"], "outboundTag": "block"},
+                {"type": "field", "ip": ["geoip:cn"], "outboundTag": "block"},
                 {"type": "field", "protocol": ["bittorrent"], "outboundTag": "block"}
             ] as $base_blocks |
-            .routing.rules = ($relay_rules + $c_rules + $base_blocks)
+            .routing.domainStrategy = "IPOnDemand" |
+            .routing.rules = ([{"type":"field", "ip":["geoip:private"], "outboundTag":"block"}] + $relay_rules + $c_rules + $base_blocks)
         )
     ' "$is_config_json")
     if [[ $? -eq 0 && -n "$tmp_json" ]]; then
@@ -1076,7 +1078,7 @@ relay_sync_client_identities() {
                             }
                         ]
                     )
-                elif (.tag == "local_xhttp_stream_up") then
+                elif (.protocol == "vless" and .streamSettings.network == "xhttp") then
                     .settings.clients = (
                         (.settings.clients | map(select(.email | startswith("relay-") | not))) +
                         [
@@ -1130,7 +1132,7 @@ relay_remove_client_identity() {
 # ─── relay operations & menu ─────────────────────────────
 
 
-_do_single_relay_test() {
+_do_single_relay_test() (
     local landing_ip="$1" landing_port="$2" transport_uuid="$3" encryption="$4" landing_name="${5:-落地机}"
     relay_validate_host "$landing_ip" && relay_validate_port "$landing_port" &&
         relay_validate_uuid "$transport_uuid" && relay_validate_vless_encryption "$encryption" || {
@@ -1243,7 +1245,7 @@ EOF
         _fail "[$landing_name] 完整链路测试失败：无法通过落地机代理访问外部网络，请检查 transport UUID 或 encryption 是否匹配"
         return 1
     fi
-}
+)
 
 relay_test() {
     echo

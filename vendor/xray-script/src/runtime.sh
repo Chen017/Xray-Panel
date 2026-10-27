@@ -140,6 +140,7 @@ config_transaction() {
                 is_relay_state_file="$real_root/relay.json"
                 firewall_ports_file="$real_root/firewall_ports.json"
                 config_staging=0
+                rm -f "$real_root/.firewall-signature"
                 firewall_sync || _fail "原防火墙规则恢复失败，请检查系统防火墙"
                 if (( was_active )); then
                     manage restart || _fail "原配置已恢复，但服务恢复失败，请查看错误日志"
@@ -183,6 +184,11 @@ config_transaction() {
         is_relay_state_file="$real_root/relay.json"
         firewall_ports_file="$real_root/firewall_ports.json"
         config_staging=0
+        # A new schema must also repair any stale chain/cache left by an older
+        # release, even when the desired port set itself did not change.
+        if ! cmp -s "$stage/old/.schema-version" "$stage/new/.schema-version"; then
+            rm -f "$real_root/.firewall-signature" || exit 1
+        fi
         firewall_sync || exit 1
         if (( restart_required && was_active )) || [[ ${is_new_install:-} ]]; then
             manage restart || exit 1

@@ -1,11 +1,11 @@
-FROM node:24.13.0-bookworm-slim AS build
+FROM node:24.22.1-bookworm-slim AS build
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --no-audit --no-fund
 COPY . .
 RUN npm run build && npm prune --omit=dev
 
-FROM node:24.13.0-bookworm-slim
+FROM node:24.22.1-bookworm-slim
 ENV NODE_ENV=production PANEL_HOST=0.0.0.0 PANEL_DB=/app/data/panel.sqlite
 WORKDIR /app
 COPY --from=build --chown=node:node /app/node_modules ./node_modules

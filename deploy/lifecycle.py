@@ -332,6 +332,11 @@ finally{db.close();fs.rmSync(file,{force:true});}
     return owner
 
 
+def panel_maintenance(image, volume, enabled):
+    script = "const fs=require('fs');const p='/data/.panel-maintenance';" + ("fs.writeFileSync(p,'upgrade\\n',{mode:0o644});" if enabled else "fs.rmSync(p,{force:true});")
+    run(['docker', 'run', '--rm', '--network=none', '--user=0', '-v', volume + ':/data', '--entrypoint', 'node', image, '-e', script])
+
+
 def panel_install(version, domains=None):
     image = IMAGE + ':' + version_tag(version)
     # Keep the existing service running if a version has not been published or cannot be pulled.
@@ -379,14 +384,24 @@ def panel_install(version, domains=None):
         run(['docker', 'volume', 'inspect', volume])
         previous = {'volume': volume, 'image': saved.get('image') or IMAGE + ':' + version_tag(saved['version']), 'running': False}
     if previous:
-        owner = snapshot_panel(previous, backup)
-        write(backup / 'previous.json', json.dumps({key: value for key, value in previous.items() if key != 'env'}))
+        # Stop the old writer before taking the rollback boundary. Older versions
+        # do not understand the new maintenance marker, so a flag alone is unsafe.
+        if previous.get('running', True): run(['docker', 'stop', '--time', '30', previous['container']])
+        try:
+            owner = snapshot_panel({**previous, 'running': False}, backup)
+            write(backup / 'previous.json', json.dumps({key: value for key, value in previous.items() if key != 'env'}))
+        except BaseException:
+            if previous.get('running', True): run(['docker', 'start', previous['container']])
+            raise
     else:
         run(['docker', 'volume', 'create', volume])
     command = ['docker', 'compose', '-p', project, '-f', str(compose)]
-    write(compose, compose_text(image, volume, env_file))
     print('备份完成，正在启动并检查面板健康状态…', flush=True)
     try:
+        # Health checks are allowed, but no external write or task dispatch may
+        # succeed on the candidate until the rollback window has closed.
+        panel_maintenance(image, volume, True)
+        write(compose, compose_text(image, volume, env_file))
         run([*command, 'up', '-d', '--no-build', 'panel'])
         healthy = False
         for _ in range(45):
@@ -397,14 +412,16 @@ def panel_install(version, domains=None):
                 if status.get('Health', {}).get('Status') == 'unhealthy': break
             time.sleep(2)
         if not healthy: raise RuntimeError('新面板健康检查未通过')
+        panel_maintenance(image, volume, False)
     except BaseException:
         if previous:
             # Restore DB before starting the old image, including future schema migrations.
-            subprocess.run([*command, 'stop', 'panel'], capture_output=True)
+            run([*command, 'stop', 'panel'])
             restore = "const fs=require('fs');fs.copyFileSync('/backup/panel.sqlite','/data/panel.sqlite');fs.chownSync('/data/panel.sqlite'," + str(owner['uid']) + ',' + str(owner['gid']) + ");for(const x of ['-wal','-shm'])fs.rmSync('/data/panel.sqlite'+x,{force:true});"
             run(['docker', 'run', '--rm', '--network=none', '--user=0', '-v', volume + ':/data', '-v', str(backup) + ':/backup:ro', '--entrypoint', 'node', previous['image'], '-e', restore])
             shutil.copy2(backup / 'panel.env', env_file)
             write(compose, compose_text(previous['image'], volume, env_file))
+            panel_maintenance(previous['image'], volume, False)
             if previous.get('running', True): run([*command, 'up', '-d', '--no-build', 'panel'])
             elif existing: run([*command, 'create', '--no-build', 'panel'])
             else: run([*command, 'down'])

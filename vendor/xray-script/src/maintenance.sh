@@ -167,10 +167,33 @@ apply_schema_migration() {
         atomic_json "$file" "$json" || return 1
     fi
     migrate_dual_stack_listeners || return 1
-    printf '%s\n' 2 > "${is_config_json%/*}/.schema-version"
+    migrate_node_entrypoints || return 1
+    # Keep private refusal ahead of legacy user routes and failover loopback routes.
+    json=$(jq '.routing.domainStrategy = "IPOnDemand" | .routing.rules = ([{"type":"field","ip":["geoip:private"],"outboundTag":"block"}] +
+        [(.routing.rules // [])[] | select((.outboundTag == "block" and .ip == ["geoip:private"]) | not)])' "$is_config_json") || return 1
+    atomic_json "$is_config_json" "$json" || return 1
+    printf '%s\n' 3 > "${is_config_json%/*}/.schema-version"
+}
+
+migrate_node_entrypoints() {
+    local file suffix json
+    for file in "$is_conf_dir"/*.json; do
+        [[ -f "$file" ]] || continue
+        suffix=$(printf '%s' "conf/${file##*/}" | sha256sum | cut -c1-16) || return 1
+        json=$(jq --arg socket "@xhttp_$suffix" --arg tag "local_xhttp_$suffix" '
+            [.inbounds[]? | select(.protocol=="vless" and .streamSettings.network=="xhttp" and
+                ((.tag // "") | test("^local_xhttp_(stream_up|port_[0-9]+|[0-9a-f]{16})$")))] as $inner |
+            if ($inner|length)>1 then error("multiple managed XHTTP inbounds")
+            elif ($inner|length)==1 then
+                (.inbounds[] | select(.tag==$inner[0].tag)) |= (.tag=$tag | .listen=$socket) |
+                (.inbounds[]? | select(.protocol=="vless") | .settings.fallbacks[]? |
+                    select(.dest==$inner[0].listen or .dest=="@xhttp_inner")).dest=$socket
+            else . end' "$file") || return 1
+        atomic_json "$file" "$json" || return 1
+    done
 }
 
 migrate_installation() {
-    [[ $(cat "$is_core_dir/.schema-version" 2>/dev/null) == 2 ]] && return 0
+    [[ $(cat "$is_core_dir/.schema-version" 2>/dev/null) == 3 ]] && return 0
     config_transaction apply_schema_migration
 }

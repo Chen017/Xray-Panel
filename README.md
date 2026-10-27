@@ -30,7 +30,7 @@
 Panel 适用于 Debian / Ubuntu 建站 VPS，需要 root、systemd、Python ≥ 3.10，并能访问 GitHub 和 GHCR。安装器补齐依赖，拉取 amd64 / arm64 Docker 镜像。
 
 ```bash
-(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.3.7/deploy/bootstrap.sh -o "$w"; bash "$w")
+(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.3.8/deploy/bootstrap.sh -o "$w"; bash "$w")
 ```
 
 域名、反向代理和 Access 按上方教程配置。
@@ -45,9 +45,11 @@ Panel 适用于 Debian / Ubuntu 建站 VPS，需要 root、systemd、Python ≥ 
 | 日志 | `xray-panel panel logs` | `xray-panel agent logs` |
 | 卸载 | `xray-panel panel uninstall` | `xray-panel agent uninstall` |
 
-更新默认获取最新正式 Release，可加 `--version 1.3.7` 指定版本。Panel 更新前备份数据库和配置，失败恢复；沿用已有 Compose 项目、数据卷和密钥，不要在 1Panel 重建第二套项目。生成的编排是 `/opt/xray-panel-manager/panel.compose.yaml`。
+更新默认获取最新正式 Release，可加 `--version 1.3.8` 指定版本。Panel 更新前备份数据库和配置，失败恢复；沿用已有 Compose 项目、数据卷和密钥，不要在 1Panel 重建第二套项目。生成的编排是 `/opt/xray-panel-manager/panel.compose.yaml`。
 
 Panel 与 Agent 分别更新。Agent 重装 / 更新保留相同节点身份、CF 凭据及自定义目录，拒绝覆盖不同节点 ID；轮换 Agent Token 后，重新运行安装并粘贴同节点的新接入信息即可。
+
+v1.3.8 修复安全审查中的运行时、路由隔离、升级回滚、过期任务恢复、原生配置兼容、多节点 XHTTP 和监控问题；同时更新 Script 副本到 v2.7.13。已有节点的生效步骤与兼容变化见 [升级说明](docs/upgrade-v1.3.8.md)。
 
 默认卸载保留数据；Agent 卸载保留 Xray。只有确实需要删除保留数据时，才使用：
 
@@ -66,7 +68,7 @@ Access、面板 Token 和 age 密钥各自独立。源站还需按 [Cloudflare �
 
 ## 🧪 本地验证
 
-要求 Node.js ≥ 24.13.0：
+要求 Node.js ≥ 24.22.1：
 
 ```bash
 git clone https://github.com/Chen017/Xray-Panel.git

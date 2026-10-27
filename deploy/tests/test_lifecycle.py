@@ -1,4 +1,4 @@
-import importlib.util,json,subprocess,tempfile,unittest
+import importlib.util,json,subprocess,tempfile,unittest,sqlite3
 from pathlib import Path
 from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('lifecycle',Path(__file__).resolve().parents[1]/'lifecycle.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
@@ -41,8 +41,7 @@ class LifecycleTests(unittest.TestCase):
         m.PANEL.mkdir();m.write(m.PANEL/'.env','PANEL_MASTER_KEY=stale-key\n');calls=[];healthy=True
         def run(args,**kw):
             calls.append(args)
-            if args[:3]==['docker','exec','old']:
-                if any('VACUUM INTO' in x for x in args):return b'{"uid":1000,"gid":1000}\nconsistent database snapshot'
+            if any('VACUUM INTO' in x for x in args):return b'{"uid":1000,"gid":1000}\nconsistent database snapshot'
             if 'ps' in args and '-q' in args:return b'new-container'
             return b''
         def inspect(args):return [{'State':{'Health':{'Status':'healthy' if healthy else 'unhealthy'}}}]
@@ -54,7 +53,7 @@ class LifecycleTests(unittest.TestCase):
             healthy=False
             with self.assertRaises(RuntimeError):m.panel_install(m.VERSION)
             self.assertIn('sha256:old',(m.HOME/'panel.compose.yaml').read_text())
-            restore=next(c for c in calls if c[:3]==['docker','run','--rm']);self.assertTrue(any('chownSync' in x and '1000,1000' in x for x in restore))
+            restore=next(c for c in calls if any('chownSync' in x for x in c));self.assertTrue(any('chownSync' in x and '1000,1000' in x for x in restore))
             backups=list((m.HOME/'backups').glob('*/panel.sqlite'));self.assertEqual(backups[0].read_bytes(),b'consistent database snapshot')
     def test_stopped_panel_is_backed_up_without_exec_and_remains_stopped_on_failure(self):
         old={'container':'stopped','running':False,'project':'1panel','volume':'original-volume','image':'sha256:old','env':{'PANEL_MASTER_KEY':'original-key'}}
@@ -88,6 +87,42 @@ class LifecycleTests(unittest.TestCase):
         with patch.object(m.shutil,'which',return_value='/bin/docker'),patch.object(m.subprocess,'run',return_value=subprocess.CompletedProcess([],0)),patch.object(m,'run',side_effect=[b'',RuntimeError('pull failed')]):
             with self.assertRaises(RuntimeError):m.panel_install(m.VERSION)
         self.assertFalse((m.HOME/'panel.compose.yaml').exists())
+    def test_upgrade_snapshot_follows_last_confirmed_write_and_failure_preserves_it(self):
+        old={'container':'old','running':True,'project':'fixture','volume':'fixture-volume','image':'sha256:old','env':{'PANEL_MASTER_KEY':'original-key'}}
+        database=self.root/'actual.sqlite';db=sqlite3.connect(database)
+        self.addCleanup(db.close);db.execute('CREATE TABLE devices(revoked INTEGER)');db.execute('INSERT INTO devices VALUES(0)');db.commit()
+        calls=[];stopped=False
+        def run(args,**kw):
+            nonlocal stopped
+            calls.append(args)
+            if args[:2]==['docker','stop']:
+                # Represents the last successful HTTP revocation before shutdown.
+                db.execute('UPDATE devices SET revoked=1');db.commit();stopped=True
+            if any('VACUUM INTO' in x for x in args):
+                self.assertTrue(stopped,'must stop the old writer before snapshot')
+                return b'{"uid":1000,"gid":1000}\n'+database.read_bytes()
+            if any('chownSync' in x for x in args):
+                self.assertTrue(any('stop' in c and 'panel' in c for c in calls))
+                snapshot=next((m.HOME/'backups').glob('*/panel.sqlite'))
+                restored=sqlite3.connect(snapshot)
+                try:self.assertEqual(restored.execute('SELECT revoked FROM devices').fetchone()[0],1)
+                finally:restored.close()
+            if 'ps' in args:return b'new-container'
+            return b''
+        with patch.object(m,'discover_panel',return_value=old),patch.object(m,'run',side_effect=run),patch.object(m,'docker_json',return_value=[{'State':{'Health':{'Status':'unhealthy'}}}]),patch.object(m.shutil,'which',return_value='/bin/docker'),patch.object(m.subprocess,'run',return_value=subprocess.CompletedProcess([],0)):
+            with self.assertRaises(RuntimeError):m.panel_install(m.VERSION)
+        self.assertTrue(any('chownSync' in x for c in calls for x in c))
+        self.assertTrue(any("writeFileSync(p," in x for c in calls for x in c),'candidate must start in maintenance mode')
+    def test_snapshot_failure_restarts_old_writer_without_starting_candidate(self):
+        old={'container':'old','running':True,'project':'fixture','volume':'fixture-volume','image':'sha256:old','env':{'PANEL_MASTER_KEY':'original-key'}}
+        calls=[]
+        def run(args,**kw):
+            calls.append(args)
+            if any('VACUUM INTO' in x for x in args):raise RuntimeError('snapshot failed')
+            return b''
+        with patch.object(m,'discover_panel',return_value=old),patch.object(m,'run',side_effect=run),patch.object(m.shutil,'which',return_value='/bin/docker'),patch.object(m.subprocess,'run',return_value=subprocess.CompletedProcess([],0)):
+            with self.assertRaises(RuntimeError):m.panel_install(m.VERSION)
+        self.assertIn(['docker','start','old'],calls);self.assertFalse(any('up' in c for c in calls))
     def test_first_panel_install_generates_env_and_retains_data_after_uninstall(self):
         with patch.object(m,'discover_panel',return_value=None),patch.object(m.shutil,'which',return_value='/bin/docker'),patch.object(m.subprocess,'run',side_effect=lambda args,**kw:subprocess.CompletedProcess([],1 if 'inspect' in args else 0)),patch.object(m,'run',side_effect=lambda args,**kw:b'container' if 'ps' in args else b''),patch.object(m,'docker_json',return_value=[{'State':{'Health':{'Status':'healthy'}}}]):
             m.panel_install(m.VERSION,['a.example.com','b.example.com','c.example.com'])

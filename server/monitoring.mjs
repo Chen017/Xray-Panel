@@ -24,7 +24,7 @@ export async function sendTelegram(settings,text,fetchImpl=fetch){
   return {ok:false,code:`telegram_${Number.isInteger(status)?status:'invalid'}`,permanent:[400,401,403,404].includes(status),retryAfter:status===429?Math.max(1,Math.min(86400,Number(data.parameters?.retry_after)||60)):undefined};
 }
 
-export function createMonitoring(store,{clock=Date.now,fetchImpl=fetch}={}){
+export function createMonitoring(store,{clock=Date.now,fetchImpl=fetch,paused=()=>false}={}){
   let sending=false;
   const settings=()=>{const saved=store.get('system','monitoring')??{};return {...monitoringDefaults,...Object.fromEntries([...Object.keys(monitoringDefaults),'botToken','generation'].filter(k=>saved[k]!==undefined).map(k=>[k,saved[k]]))};};
   const configHash=cfg=>hash(['relay-network-v3',cfg.enabled,cfg.failures,cfg.recoveries,cfg.interval,cfg.generation]);
@@ -44,7 +44,7 @@ export function createMonitoring(store,{clock=Date.now,fetchImpl=fetch}={}){
       if(isLanding(n)){
         if(probe.report?.monitorProtocol===3)targets.push({kind:'overseas',nodeId:n.id,host:'Cloudflare 1.1.1.1 / 1.0.0.1',port:0,family:0,region:'self'});
       }else if([2,3].includes(probe.report?.monitorProtocol))targets.push({kind:'connectivity',nodeId:n.id,host:n.ipv4||n.ipv6||'本机网络',port:0,family:0,region:'self',scope:hash([n.ipv4,n.ipv6])});
-      const b=n.applied??n.observed;if(!b)continue;
+      const b=n.observed??n.applied;if(!b)continue;
       let s;try{s=readSettings(b);}catch{}
       for(const [key,family] of [['ipv4',4],['ipv6',6]]){
         if(!n[key])continue;
@@ -58,6 +58,16 @@ export function createMonitoring(store,{clock=Date.now,fetchImpl=fetch}={}){
     const cfg=settings();if(!cfg.enabled||![1,2,3].includes(probe.report?.monitorProtocol))return null;
     const signature=configHash(cfg),current=store.get('node',probe.id)??probe;
     const targets=targetsFor(probe,cfg,store.list('node'));
+    const targetHash=hash(targets.map(t=>t.id).sort());
+    if(current.monitorTargetsHash!==targetHash){
+      delete current.monitorPlan;current.monitorDueAt=0;current.monitorTargetsHash=targetHash;
+      const ids=new Set(targets.map(t=>t.id));
+      for(const record of store.list('monitor').filter(r=>r.nodeId===probe.id&&!ids.has(r.id))){
+        store.put('monitor',record.id,{...record,samples:{},evidence:[],active:false,alertDelivered:false,assessment:'insufficient'});
+        for(const item of store.list('notification').filter(n=>n.incidentId===record.id&&['pending','sending'].includes(n.status)))store.put('notification',item.id,{...item,status:'superseded'});
+      }
+      store.put('node',current.id,current);
+    }
     if(current.monitorPlan&&!current.monitorPlan.targets.every(t=>targets.some(now=>now.id===t.id))){
       delete current.monitorPlan;current.monitorDueAt=0;store.put('node',current.id,current);
     }
@@ -120,7 +130,7 @@ export function createMonitoring(store,{clock=Date.now,fetchImpl=fetch}={}){
   }).sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0)).slice(0,200),notifications:store.list('notification').sort((a,b)=>b.createdAt-a.createdAt).slice(0,50).map(({text,destinationHash,...safe})=>safe),notice:'三项独立告警：中转 → 落地、落地 → 中转、落地海外连通；任一项连续失败达到设置轮数即通知。落地机不检测国内目标。需 Agent 1.3.6；TCP 可达不代表完整代理链路可用。',upgradeRequired:store.list('node').filter(n=>n.enabled&&n.report?.monitorProtocol!==3).map(n=>({id:n.id,name:n.name}))};}
   async function test(){const cfg=settings();if(!cfg.botToken||!cfg.chatId)throw Error('请先保存 Bot Token 和 Chat ID');return sendTelegram(cfg,'Xray Panel 测试通知：Telegram 接口已收到此消息。',fetchImpl);}
   async function drain(){
-    if(sending)return;sending=true;
+    if(sending||paused())return;sending=true;
     try{
       const cfg=settings();for(const old of store.list('monitor'))if(clock()-(old.updatedAt??0)>7*86400000)store.remove('monitor',old.id);if(!cfg.enabled)return;
       const item=store.list('notification').filter(x=>(x.status==='pending'&&x.dueAt<=clock()||x.status==='sending'&&(x.leaseUntil??0)<=clock())).sort((a,b)=>a.createdAt-b.createdAt)[0];if(!item)return;

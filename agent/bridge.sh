@@ -16,12 +16,20 @@ is_core_repo=XTLS/Xray-core
 is_sh_repo=Chen017/Xray
 case $(uname -m) in x86_64) is_core_arch=64;; aarch64) is_core_arch=arm64-v8a;; *) exit 1;; esac
 [[ -d "$is_sh_dir/src" ]] || is_sh_dir="$(cd "$(dirname "$0")/../vendor/xray-script" && pwd)"
+is_module_dir="$is_sh_dir"
+vendor_dir="$(cd "$(dirname "$0")/../vendor/xray-script" && pwd)"
+installed_version=$(sed -n 's/^is_sh_ver=//p' "$is_sh_dir/xray.sh" | head -1)
+vendor_version=$(sed -n 's/^is_sh_ver=//p' "$vendor_dir/xray.sh" | head -1)
+# An older installation must not shadow security fixes shipped with the Agent.
+if [[ -n "$vendor_version" && $(printf '%s\n' "$installed_version" "$vendor_version" | sort -V | tail -1) != "$installed_version" ]]; then
+    is_module_dir="$vendor_dir"
+fi
 _fail() { printf '%s\n' "$*" >&2; }
 _ok() { printf '%s\n' "$*"; }
 _info() { printf '%s\n' "$*"; }
 _step() { printf '%s\n' "$*"; }
 warn() { printf '%s\n' "$*" >&2; }
-load() { . "$is_sh_dir/src/$1"; }
+load() { . "$is_module_dir/src/$1"; }
 for module in runtime firewall core maintenance routing diagnostics status download bbr; do load "$module.sh"; done
 is_sh_ver=$(sed -n 's/^is_sh_ver=//p' "$is_sh_dir/xray.sh" | head -1)
 [[ -z ${PANEL_TEST_DRIVER:-} ]] || . "$PANEL_TEST_DRIVER"
