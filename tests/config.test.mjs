@@ -78,7 +78,7 @@ test('landing dual inbounds and Scheme 1 NAT v4 entry compilation',()=>{
   assert.equal(proxies.length,1);
   assert.equal(proxies[0].port,35555);
   assert.equal(proxies[0].tls,false);
-  assert.equal(proxies[0].flow,'xtls-rprx-vision');
+  assert.equal(proxies[0].flow,undefined);
   assert.equal(proxies[0].encryption,'mlkem768x25519plus.random.0rtt.100-111-1111.75-0-111.50-0-3333.enckey');
 
   const links=deviceProviderLinks([landingNode],d,master);
@@ -88,7 +88,7 @@ test('landing dual inbounds and Scheme 1 NAT v4 entry compilation',()=>{
   assert.equal(u.port,'35555');
   assert.equal(u.searchParams.get('security'),'none');
   assert.equal(u.searchParams.get('type'),'tcp');
-  assert.equal(u.searchParams.get('flow'),'xtls-rprx-vision');
+  assert.equal(u.searchParams.get('flow'),null);
   assert.equal(u.searchParams.get('encryption'),'mlkem768x25519plus.random.0rtt.100-111-1111.75-0-111.50-0-3333.enckey');
 });
 
@@ -116,7 +116,7 @@ test('line node NAT v4 split dialer-proxy and vision4 entry export',()=>{
   assert.equal(vision4Proxy.server,'203.0.113.10');
   assert.equal(vision4Proxy.port,35555);
   assert.equal(vision4Proxy.tls,false);
-  assert.equal(vision4Proxy.flow,'xtls-rprx-vision');
+  assert.equal(vision4Proxy.flow,undefined);
   assert.equal(vision4Proxy.encryption,'mlkem768x25519plus.random.0rtt.100-111-1111.75-0-111.50-0-3333.enckey');
 
   const guardProxy=proxies.find(p=>p.name===guardName);
@@ -124,4 +124,5 @@ test('line node NAT v4 split dialer-proxy and vision4 entry export',()=>{
   assert.equal(guardProxy.server,'203.0.113.10');
   assert.equal(guardProxy.port,35555);
   assert.equal(guardProxy.tls,false);
+  assert.equal(guardProxy.flow,undefined);
 });

@@ -122,7 +122,7 @@ export function patchRouting(bundle,{customRules,relay}={}) {
   if(r?.role==='landing') {
     const inbounds=[{tag:'relay-in',listen:'0.0.0.0',port:r.listen_port,protocol:'vless',settings:{clients:[{id:r.transport_uuid,flow:'xtls-rprx-vision',email:'relay-transport'}],decryption:r.decryption},streamSettings:{network:'raw',security:'none'},sniffing:{enabled:true,destOverride:['http','tls','quic'],routeOnly:true}}];
     if(r.entry_listen_port&&r.entry_listen_port>0&&r.entry_uuid&&r.entry_decryption) {
-      inbounds.push({tag:'relay-entry-v4',listen:'0.0.0.0',port:r.entry_listen_port,protocol:'vless',settings:{clients:[{id:r.entry_uuid,flow:'xtls-rprx-vision',email:'relay-entry-v4'}],decryption:r.entry_decryption},streamSettings:{network:'raw',security:'none'},sniffing:{enabled:true,destOverride:['http','tls','quic'],routeOnly:true}});
+      inbounds.push({tag:'relay-entry-v4',listen:'0.0.0.0',port:r.entry_listen_port,protocol:'vless',settings:{clients:[{id:r.entry_uuid,email:'relay-entry-v4'}],decryption:r.entry_decryption},streamSettings:{network:'raw',security:'none'},sniffing:{enabled:true,destOverride:['http','tls','quic'],routeOnly:true}});
     }
     f['conf/99_relay_in.json']={inbounds};
   }
@@ -145,7 +145,7 @@ export function compileDevices(base,node,devices,master) {
     if(route!=='direct'&&!l)continue;
     const email=`panel-${d.id}-${route}`,id=deviceUuid(master,d,node.id,route);
     for(const [,f]of nodeFiles(b))for(const i of managedInbounds(f)) i.settings.clients.push({id,email,...(i.streamSettings?.security==='reality'?{flow:'xtls-rprx-vision'}:{})});
-    if(route==='direct'&&landingEntryInbound)landingEntryInbound.settings.clients.push({id,email,flow:'xtls-rprx-vision'});
+    if(route==='direct'&&landingEntryInbound)landingEntryInbound.settings.clients.push({id,email});
     if(l)deviceRules.push({type:'field',user:[email],...(b.files['relay.json'].failover?.enabled?{balancerTag:`relay-balancer-${route}`}:{outboundTag:`relay-out-${route}`})});
   }
   // This applies to imported legacy routing too, before any per-user or loopback rule.
@@ -171,7 +171,7 @@ function providerEntries(node,applied,device,master,sourceFile) {
       const port=r.entry_external_port||r.entry_listen_port;
       const key=subscriptionNameKey(node.id,'conf/99_relay_in.json','direct','vlessenc');
       const defaultName=`${node.subscriptionName||node.name} · NAT-v4-VLESS-Enc`,customName=node.subscriptionNames?.[key]??'';
-      const p={name:customName||defaultName,type:'vless',server,port,uuid,network:'tcp',tls:false,udp:true,tfo:true,mptcp:true,'packet-encoding':'xudp',flow:'xtls-rprx-vision',encryption:(r.entry_encryption||'').replace(/=+$/,'')};
+      const p={name:customName||defaultName,type:'vless',server,port,uuid,network:'tcp',tls:false,udp:true,tfo:true,mptcp:true,'packet-encoding':'xudp',encryption:(r.entry_encryption||'').replace(/=+$/,'')};
       return [{proxy:p,settings:{xhttp:{}},key,nodeId:node.id,file:'conf/99_relay_in.json',route:'direct',mode:'vlessenc',defaultName,customName}];
     }
     return [];
@@ -188,7 +188,7 @@ function providerEntries(node,applied,device,master,sourceFile) {
     const landing=applied.files['relay.json']?.landings?.find(l=>l.id===route);
     const hasNatV4=!!(landing?.entry_port&&landing.entry_port>0&&landing.entry_encryption);
     const guardName=`${node.subscriptionName||node.name} · ${landing?.name??route} · NAT-v4-Entry`;
-    const guardProxy=hasNatV4?{name:guardName,type:'vless',server:landing.landing_ip,port:landing.entry_port,uuid:landing.entry_uuid||uuid,network:'tcp',tls:false,udp:true,tfo:true,mptcp:true,'packet-encoding':'xudp',flow:'xtls-rprx-vision',encryption:(landing.entry_encryption||'').replace(/=+$/,'')}:null;
+    const guardProxy=hasNatV4?{name:guardName,type:'vless',server:landing.landing_ip,port:landing.entry_port,uuid:landing.entry_uuid||uuid,network:'tcp',tls:false,udp:true,tfo:true,mptcp:true,'packet-encoding':'xudp',encryption:(landing.entry_encryption||'').replace(/=+$/,'')}:null;
     const file=sourceFile??regular[0][0],key=subscriptionNameKey(node.id,file,route,mode),defaultName=`${node.subscriptionName||node.name} · ${route==='direct'?'直出':landing?.name??route} · ${mode}`,customName=node.subscriptionNames?.[key]??'';
 
     if(hasNatV4&&mode==='vision4'){
@@ -232,7 +232,8 @@ export function deviceProviderNameEntries(nodes,device,master){return deviceProv
 export function vlessLink(proxy,settings) {
   const p=proxy;
   if(p.tls===false){
-    const q=new URLSearchParams({encryption:p.encryption||'none',security:'none',flow:p.flow||'xtls-rprx-vision',type:'tcp'});
+    const q=new URLSearchParams({encryption:p.encryption||'none',security:'none',type:'tcp'});
+    if(p.flow)q.set('flow',p.flow);
     return `vless://${p.uuid}@${p.server.includes(':')?`[${p.server}]`:p.server}:${p.port}?${q}#${encodeURIComponent(p.name)}`;
   }
   const q=new URLSearchParams({encryption:'none',security:'reality',sni:p.servername,fp:p['client-fingerprint'],pbk:p['reality-opts']['public-key'],sid:p['reality-opts']['short-id'],alpn:(p.alpn??['h2']).join(','),type:p.network==='xhttp'?'xhttp':'tcp'});
