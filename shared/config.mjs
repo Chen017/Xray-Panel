@@ -89,7 +89,7 @@ const optionalEntryPort=z.preprocess(v=>v===0||v===''?undefined:v,portSchema.opt
 const optionalEntryUuid=z.preprocess(v=>v===''?undefined:v,z.guid().optional());
 const optionalEntryKey=z.preprocess(v=>v===''?undefined:v,z.string().min(10).max(2000).optional());
 const clearDisabledEntry = r => {if(r&&typeof r==='object'&&r.role==='landing'&&!r.entry_listen_port){r={...r};for(const key of ['entry_external_port','entry_uuid','entry_decryption','entry_encryption'])delete r[key];}return r;};
-export const landingSchema=z.object({id:z.string().regex(/^\d{1,6}$/),name:z.string().min(1).max(80),landing_ip:hostSchema,landing_port:portSchema,transport_uuid:z.guid(),encryption:z.string().min(10).max(2000).refine(s=>s.startsWith('mlkem768x25519plus.')||s.startsWith('mlkem768x25519.')||s.startsWith('chacha20poly1305.')),client_uuid:z.guid(),nodeId:z.guid().optional(),addressFamily:z.enum(['ipv4','ipv6']).optional(),entry_address:hostSchema.optional(),entry_port:optionalEntryPort,entry_uuid:optionalEntryUuid,entry_encryption:optionalEntryKey}).superRefine((l,ctx)=>{if(l.entry_port&&(!l.entry_uuid||!l.entry_encryption))ctx.addIssue({code:'custom',path:['entry_port'],message:'公开入口需要独立 UUID 和加密参数，请导入落地机完整中继链接'});});
+export const landingSchema=z.object({id:z.string().regex(/^\d{1,6}$/),name:z.string().min(1).max(80),landing_ip:hostSchema,landing_port:portSchema,transport_uuid:z.guid(),encryption:z.string().min(10).max(2000).refine(s=>s.startsWith('mlkem768x25519plus.')||s.startsWith('mlkem768x25519.')||s.startsWith('chacha20poly1305.')),client_uuid:z.guid(),nodeId:z.guid().optional(),addressFamily:z.enum(['ipv4','ipv6']).optional(),entry_enabled:z.boolean().optional(),entry_address:hostSchema.optional(),entry_port:optionalEntryPort,entry_uuid:optionalEntryUuid,entry_encryption:optionalEntryKey}).superRefine((l,ctx)=>{if(l.entry_port&&(!l.entry_uuid||!l.entry_encryption))ctx.addIssue({code:'custom',path:['entry_port'],message:'公开入口需要独立 UUID 和加密参数，请导入落地机完整中继链接'});});
 export const relaySchema=z.preprocess(clearDisabledEntry,z.discriminatedUnion('role',[
   z.object({role:z.literal('none')}),
   z.object({role:z.literal('line'),landings:z.array(landingSchema).min(1).max(32),failover:z.object({enabled:z.boolean(),interval:z.string().regex(/^[1-9]\d{0,4}s$/),order:z.array(z.string())})}),
@@ -143,17 +143,29 @@ export function natEntryClients(nodeId,nodes,devices,master){
   for(const source of nodes.filter(n=>n.enabled&&n.id!==nodeId)){
     const relay=(source.observed??source.applied)?.files?.['relay.json'];
     if(relay?.role!=='line')continue;
-    for(const landing of (relay.landings??[]).filter(l=>l.nodeId===nodeId&&l.entry_port>0))for(const d of devices.filter(d=>!d.revoked)){
+    for(const landing of (relay.landings??[]).filter(l=>l.nodeId===nodeId&&l.entry_enabled!==false&&l.entry_port>0))for(const d of devices.filter(d=>!d.revoked)){
       const grant=d.grants.find(g=>g.nodeId===source.id);
       if(grant?.routes.includes(landing.id)&&grant.modes.some(mode=>['split','single4','vision4'].includes(mode)))clients.push({id:deviceUuid(master,d,source.id,landing.id),email:`panel-relay-${source.id}-${d.id}-${landing.id}`});
     }
   }
   return clients.sort((a,b)=>a.email.localeCompare(b.email));
 }
+// Allow authenticated transport to associated line endpoints before country/SNI
+// blocks. Private refusal still runs first; unrelated destinations stay blocked.
+export function natEntryTransportRules(nodeId,nodes,devices,master){
+ const clients=natEntryClients(nodeId,nodes,devices,master),rules=[];
+ for(const source of nodes.filter(n=>n.enabled)){
+  const users=clients.filter(c=>c.email.startsWith(`panel-relay-${source.id}-`)).map(c=>c.email);
+  const ip=[source.ipv4,source.ipv6].filter(v=>v&&isIP(v));
+  const ports=[...new Set(nodeFiles((source.observed??source.applied)??{files:{}}).flatMap(([,f])=>managedInbounds(f).filter(i=>i.streamSettings?.security==='reality').map(i=>i.port)).filter(p=>Number.isInteger(p)&&p>0&&p<=65535))].sort((a,b)=>a-b);
+  if(users.length&&ip.length&&ports.length)rules.push({type:'field',inboundTag:['relay-entry-v4'],user:users,ip,port:ports.join(','),network:'tcp',outboundTag:'direct'});
+ }
+ return rules;
+}
 export function compileDevices(base,node,devices,master,nodes=[]) {
   const b=migrateNodeEntrypoints(validateBundle(base)),m=b.files['config.json'];
   const deviceRules=[];
-  m.routing??={rules:[]};m.routing.domainStrategy='IPOnDemand';m.routing.rules=(m.routing.rules??[]).filter(r=>!r.user?.some(u=>u.startsWith('panel-')));
+  m.routing??={rules:[]};m.routing.domainStrategy='IPOnDemand';m.routing.rules=(m.routing.rules??[]).filter(r=>r.ruleTag!=='panel-nat-transport-temporary'&&!r.user?.some(u=>u.startsWith('panel-')));
   for(const [,f] of nodeFiles(b))for(const i of managedInbounds(f)){i.settings??={};i.settings.clients=(i.settings.clients??[]).filter(c=>!c.email?.startsWith('panel-'));}
   const landingEntryInbound=b.files['conf/99_relay_in.json']?.inbounds?.find(i=>i.tag==='relay-entry-v4');
   if(landingEntryInbound){landingEntryInbound.settings??={};landingEntryInbound.settings.clients=(landingEntryInbound.settings.clients??[]).filter(c=>!c.email?.startsWith('panel-'));}
@@ -165,7 +177,7 @@ export function compileDevices(base,node,devices,master,nodes=[]) {
     if(route==='direct'&&landingEntryInbound)landingEntryInbound.settings.clients.push({id,email});
     if(l)deviceRules.push({type:'field',user:[email],...(b.files['relay.json'].failover?.enabled?{balancerTag:`relay-balancer-${route}`}:{outboundTag:`relay-out-${route}`})});
   }
-  if(landingEntryInbound)landingEntryInbound.settings.clients.push(...natEntryClients(node.id,nodes,devices,master));
+  if(landingEntryInbound){landingEntryInbound.settings.clients.push(...natEntryClients(node.id,nodes,devices,master));deviceRules.push(...natEntryTransportRules(node.id,nodes,devices,master));}
   // This applies to imported legacy routing too, before any per-user or loopback rule.
   const rules=m.routing.rules.filter(r=>!(r.outboundTag==='block'&&r.ip?.length===1&&r.ip[0]==='geoip:private'));
   const loopRule=r=>r.balancerTag?.startsWith('relay-balancer-')&&r.inboundTag?.some(t=>t.startsWith('from-loop-relay-'));
@@ -205,11 +217,11 @@ function providerEntries(node,applied,device,master,sourceFile) {
     const sni=f=>f==='4'?s.sni4:s.sni6,sid=f=>f==='4'?s.shortIds4[0]:(s.shortIds6[1]??s.shortIds6[0]);
     const transport=f=>({server:addr(f),port:s.port,tls:true,servername:sni(f),'client-fingerprint':f===family?'chrome':'firefox',alpn:['h2'],'reality-opts':{'public-key':s.publicKey,'short-id':sid(f)}});
     const landing=applied.files['relay.json']?.landings?.find(l=>l.id===route);
-    const hasNatV4=!!(landing?.entry_port&&landing.entry_port>0&&landing.entry_encryption);
+    const hasNatV4=!!(landing?.entry_enabled!==false&&landing?.entry_port&&landing.entry_port>0&&landing.entry_encryption);
     const entryTarget=hasNatV4&&landing.nodeId&&['split','single4','vision4'].includes(mode)?{nodeId:landing.nodeId,uuid}:null;
-    const guardName=`${node.subscriptionName||node.name} · ${landing?.name??route} · NAT-v4-Entry`;
+    const file=sourceFile??regular[0][0],guardKey=subscriptionNameKey(node.id,file,route,'nat4-entry'),guardDefaultName=`${node.subscriptionName||node.name} · ${landing?.name??route} · NAT-v4-Entry`,guardCustomName=node.subscriptionNames?.[guardKey]??'',guardName=guardCustomName||guardDefaultName;
     const guardProxy=hasNatV4?{name:guardName,type:'vless',server:landing.entry_address??landing.landing_ip,port:landing.entry_port,uuid:landing.nodeId?uuid:landing.entry_uuid||uuid,network:'tcp',tls:false,udp:true,tfo:false,mptcp:true,'packet-encoding':'xudp',encryption:(landing.entry_encryption||'').replace(/=+$/,'')}:null;
-    const file=sourceFile??regular[0][0],key=subscriptionNameKey(node.id,file,route,mode),defaultName=`${node.subscriptionName||node.name} · ${route==='direct'?'直出':landing?.name??route} · ${mode}`,customName=node.subscriptionNames?.[key]??'';
+    const key=subscriptionNameKey(node.id,file,route,mode),defaultName=`${node.subscriptionName||node.name} · ${route==='direct'?'直出':landing?.name??route} · ${mode}`,customName=node.subscriptionNames?.[key]??'';
 
     if(hasNatV4&&mode==='vision4'){
       const p={...guardProxy,name:customName||defaultName};
@@ -227,7 +239,7 @@ function providerEntries(node,applied,device,master,sourceFile) {
       else if(mode==='single4')p['dialer-proxy']=guardName;
       if((p['dialer-proxy']||p['xhttp-opts']?.['download-settings']?.['dialer-proxy'])&&!emittedGuards.has(guardName)){
         emittedGuards.add(guardName);
-        result.push({proxy:guardProxy,settings:s,key:subscriptionNameKey(node.id,file,route,'nat4-entry'),nodeId:node.id,file,route,mode:'nat4-entry',defaultName:guardName,customName:'',entryTarget});
+        result.push({proxy:guardProxy,settings:s,key:guardKey,nodeId:node.id,file,route,mode:'nat4-entry',defaultName:guardDefaultName,customName:guardCustomName,entryTarget});
       }
     }
     const window=device.downloadWindows?.[key];

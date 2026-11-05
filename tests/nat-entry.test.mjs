@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {fixtureBundle,testSystem} from './helpers.mjs';
 import * as age from 'age-encryption';
-import {compileDevices,deviceProviderProxies,providerProxies,patchRouting,readSettings,patchSettings,deviceUuid,relaySchema,natEntryClients,vlessLink} from '../shared/config.mjs';
+import {compileDevices,deviceProviderProxies,providerProxies,patchRouting,readSettings,patchSettings,deviceUuid,relaySchema,natEntryClients,vlessLink,providerNameEntries} from '../shared/config.mjs';
 
 const master='nat-entry-test-master';
 function topology(){
@@ -89,4 +89,28 @@ test('Agent lifecycle synchronizes linked NAT grants, gates subscription and rem
     assert.equal((await sub()).status,401);
     assert.equal(await poll(target),null,'unchanged heartbeat must not queue another deployment');
   }finally{await s.close();}
+});
+
+test('NAT alias updates both split directions and can be cleared',()=>{
+ const {source,device}=topology();const entry=providerNameEntries(source,source.applied,device,master).find(e=>e.mode==='nat4-entry');source.subscriptionNames={[entry.key]:'🇭🇰 HKT'};
+ for(const reverse of [false,true]){const b=patchSettings(source.applied,{...readSettings(source.applied),v6Uplink:reverse}),proxies=providerProxies(source,b,device,master),split=proxies.find(p=>p.network==='xhttp'&&p['xhttp-opts']['download-settings']);assert.ok(proxies.some(p=>p.name==='🇭🇰 HKT'));assert.equal(reverse?split['xhttp-opts']['download-settings']['dialer-proxy']:split['dialer-proxy'],'🇭🇰 HKT');}
+ source.subscriptionNames={};assert.ok(providerProxies(source,source.applied,device,master).some(p=>p.name===entry.defaultName));
+});
+test('NAT routing switch preserves inter-server relay and can be re-enabled',()=>{
+ const {source,device,target,nodes}=topology();const original=structuredClone(source.applied),off=structuredClone(original);off.files['relay.json'].landings[0].entry_enabled=false;source.observed=off;source.applied=off;
+ const proxies=providerProxies(source,off,device,master),split=proxies.find(p=>p.name.endsWith('split'));assert.equal(split['dialer-proxy'],undefined);assert.ok(!proxies.some(p=>p.name.endsWith('NAT-v4-Entry')));assert.deepEqual(off.files['config.json'].outbounds,original.files['config.json'].outbounds);assert.deepEqual(natEntryClients(target.id,nodes,[device],master),[]);
+ off.files['relay.json'].landings[0].entry_enabled=true;assert.ok(providerProxies(source,off,device,master).some(p=>p.name.endsWith('NAT-v4-Entry')));assert.equal(natEntryClients(target.id,nodes,[device],master).length,1);
+});
+
+test('admin can save a NAT guard alias and all provider references follow it',async()=>{
+ const s=await testSystem();try{await s.login();const f=topology();s.store.put('node',f.source.id,f.source);s.store.put('node',f.target.id,f.target);
+ const url=`/nodes/${f.source.id}/subscription-names`,catalog=(await s.call(url)).body,guard=catalog.entries.find(e=>e.mode==='nat4-entry');assert.ok(guard);
+ const saved=await s.call(url,'PUT',{revision:catalog.revision,subscriptionName:'',names:{[guard.key]:'🇭🇰 HKT'}});assert.equal(saved.status,200,JSON.stringify(saved.body));assert.equal(saved.body.entries.find(e=>e.key===guard.key).name,'🇭🇰 HKT');
+ }finally{await s.close();}
+});
+
+test('NAT transport exception is limited to granted users, line IPs, inbound and ports after private refusal',()=>{
+ const f=topology(),bundle=compileDevices(f.target.applied,f.target,[f.device],master,f.nodes),rules=bundle.files['config.json'].routing.rules;
+ assert.deepEqual(rules[0].ip,['geoip:private']);const rule=rules.find(r=>r.inboundTag?.includes('relay-entry-v4'));assert.ok(rule);assert.deepEqual(rule.ip,[f.source.ipv4,f.source.ipv6]);assert.equal(rule.port,'443');assert.equal(rule.network,'tcp');assert.deepEqual(rule.user,natEntryClients(f.target.id,f.nodes,[f.device],master).map(c=>c.email));
+ const revoked=compileDevices(bundle,f.target,[{...f.device,revoked:true}],master,f.nodes);assert.ok(!revoked.files['config.json'].routing.rules.some(r=>r.inboundTag?.includes('relay-entry-v4')));
 });

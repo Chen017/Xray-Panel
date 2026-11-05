@@ -49,7 +49,7 @@ export function resolveLinkedAddresses(bundle,nodes) {
     const address=effectiveAddress(target,landing.addressFamily??'ipv4');
     if(!address)throw Error('关联落地没有可用的公网地址，请设置手动覆盖或等待探测');
     landing.landing_ip=address;landing.landing_port=current.external_port??current.listen_port;
-    if(current.entry_listen_port&&current.entry_listen_port>0){
+    if(current.entry_listen_port&&current.entry_listen_port>0&&landing.entry_enabled!==false){
       landing.entry_address=effectiveAddress(target,'ipv4');
       if(!landing.entry_address||isIP(landing.entry_address)===6)throw Error('关联落地的公开 IPv4 入口缺少 IPv4 地址或域名，请设置地址后重试');
       landing.entry_port=current.entry_external_port??current.entry_listen_port;

@@ -1,4 +1,4 @@
-import {Accordion,Alert,NumberInput,Select,SimpleGrid,Stack,TextInput} from '@mantine/core';
+import {Accordion,Alert,NumberInput,Select,SimpleGrid,Stack,Switch,Text,TextInput} from '@mantine/core';
 import type {RecordData} from './panel';
 
 export function LandingCard({value,nodes,onChange}:{value:RecordData;nodes:RecordData[];onChange:(v:RecordData)=>void}) {
@@ -15,6 +15,7 @@ export function LandingCard({value,nodes,onChange}:{value:RecordData;nodes:Recor
     <Select label="落地地址来源" value={value.nodeId??''} data={[{value:'',label:'外部落地：手动地址'},...targets.map(n=>({value:n.id,label:`关联 ${n.name}`}))]} onChange={bind}/>
     {linked&&<><Select label="关联地址族" data={[{value:'ipv4',label:'IPv4 / 手动域名'},{value:'ipv6',label:'IPv6 / 手动域名'}]} value={value.addressFamily??'ipv4'} onChange={family=>onChange({...value,addressFamily:family})}/><Alert color="cyan">关联节点公网地址变化会排入正常配置校验和部署任务，不只修改订阅。公网端口取落地机映射端口。</Alert></>}
     <SimpleGrid cols={{base:1,sm:2}}><TextInput label="公网 IP / 域名" readOnly={!!linked} value={linked?.[value.addressFamily??'ipv4']||value.landing_ip} onChange={e=>onChange({...value,landing_ip:e.currentTarget.value})}/><NumberInput label="公网端口" readOnly={!!linked} min={1} max={65535} value={linkedRelay?.external_port??value.landing_port} onChange={v=>onChange({...value,landing_port:Number(v)})}/></SimpleGrid>
+    {Number(effectiveEntryPort)>0&&<><Switch label="通过此落地的 NAT IPv4 过墙" checked={value.entry_enabled!==false} onChange={e=>onChange({...value,entry_enabled:e.currentTarget.checked})}/><Text size="xs" c="dimmed">关闭并保存部署后，客户端恢复线路机自身的 IPv4 / IPv6 上下行分离；线路至落地的出口互联继续保留。可随时重新开启，无需删除入口参数。</Text></>}
     <Accordion><Accordion.Item value="transport"><Accordion.Control>高级互联与 NAT v4 参数</Accordion.Control><Accordion.Panel><Stack>{[['transport_uuid','互联 UUID'],['client_uuid','脚本客户端 UUID'],['encryption','VLESS encryption']].map(([key,label])=><TextInput key={key} label={label} value={value[key]} onChange={e=>onChange({...value,[key]:e.currentTarget.value})}/>)}
     <NumberInput label="NAT v4 方案一过墙公网端口（0 为不开启）" min={0} max={65535} readOnly={!!linked} value={effectiveEntryPort} onChange={v=>onChange({...value,entry_port:Number(v)})}/>
     {Number(effectiveEntryPort)>0&&<><TextInput label="方案一过墙 UUID" readOnly={!!linked} value={(linked?linkedRelay?.entry_uuid:value.entry_uuid)??''} onChange={e=>onChange({...value,entry_uuid:e.currentTarget.value})}/><TextInput label="方案一过墙 VLESS encryption" readOnly={!!linked} value={(linked?linkedRelay?.entry_encryption:value.entry_encryption)??''} onChange={e=>onChange({...value,entry_encryption:e.currentTarget.value})}/></>}

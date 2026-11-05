@@ -12,7 +12,7 @@ export function assertUniqueNames(nodes,devices,master) {
   const catalogs=new Map(nodes.map(n=>[n.id,nodeNameEntries(n,master)]));
   for(const entries of catalogs.values())check(entries.map(e=>e.name));
   // Validate future grants too: a new device's UUID has not been deployed yet.
-  for(const device of devices.filter(d=>!d.revoked))check(nodes.filter(n=>n.enabled).flatMap(n=>{const g=device.grants.find(g=>g.nodeId===n.id);return g?catalogs.get(n.id).filter(e=>g.routes.includes(e.route)&&g.modes.includes(e.mode)).map(e=>e.name):[];}));
+  for(const device of devices.filter(d=>!d.revoked))check(nodes.filter(n=>n.enabled).flatMap(n=>{const g=device.grants.find(g=>g.nodeId===n.id);return g?catalogs.get(n.id).filter(e=>g.routes.includes(e.route)&&(g.modes.includes(e.mode)||e.mode==='nat4-entry'&&g.modes.some(m=>['split','single4'].includes(m)))).map(e=>e.name):[];}));
 }
 export function migrateSubscriptionNames(store,master) {
   let migrated=false;

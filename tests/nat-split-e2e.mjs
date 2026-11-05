@@ -56,7 +56,7 @@ try{
   const server={log:{loglevel:'warning'},inbounds:[
     {tag:'line',listen:'::',port:linePort,protocol:'vless',settings:{clients:[{id,flow:'xtls-rprx-vision'}],decryption:'none',fallbacks:[{dest:inner}]},streamSettings:{network:'raw',security:'reality',realitySettings:{dest:`127.0.0.1:${tlsPort}`,serverNames:['localhost'],privateKey:pair.privateKey,shortIds:['12345678']},sockopt:{v6only:false}}},
     {listen:'127.0.0.1',port:inner,protocol:'vless',settings:{clients:[{id}],decryption:'none'},streamSettings:{network:'xhttp',security:'none',xhttpSettings:{path:'/test',mode:'stream-up'}}},
-    {tag:'relay-entry-v4',listen:'127.0.0.1',port:entry,protocol:'vless',settings:{clients:[{id:entryId,flow:'xtls-rprx-vision'}],decryption:dec},streamSettings:{network:'raw',security:'none'}}
+    {tag:'relay-entry-v4',listen:'127.0.0.1',port:entry,protocol:'vless',settings:{clients:[{id:entryId,email:'test-nat',flow:'xtls-rprx-vision'}],decryption:dec},streamSettings:{network:'raw',security:'none'}}
   ],outbounds:[{protocol:'freedom'}]};
   const transport={port:linePort,tls:true,servername:'localhost','client-fingerprint':'chrome',alpn:['h2'],'reality-opts':{'public-key':pair.publicKey,'short-id':'12345678'}};
   const proxies=[
@@ -78,6 +78,14 @@ try{
   // The persistent client may still hold a ticket from the old Xray process.
   // A rejected early request is not replayed; the next connection must recover.
   await request('guard');
+  server.inbounds.find(i=>i.tag==='relay-entry-v4').sniffing={enabled:true,destOverride:['tls','http'],routeOnly:true};
+  server.outbounds=[{tag:'direct',protocol:'freedom'},{tag:'block',protocol:'blackhole'}];
+  server.routing={rules:[{type:'field',domain:['full:localhost'],outboundTag:'block'}]};
+  await stop(serverWorker);fs.writeFileSync(serverFile,JSON.stringify(server));serverWorker=start(xray,['run','-c',serverFile]);await ready(entry,serverWorker);
+  await request('guard');const blocked=await request('split');assert.notEqual(blocked.out,payload,'SNI block did not reproduce NAT transport failure');
+  server.routing.rules.unshift({type:'field',inboundTag:['relay-entry-v4'],user:['test-nat'],ip:['127.0.0.1'],port:String(linePort),network:'tcp',outboundTag:'direct'});
+  await stop(serverWorker);fs.writeFileSync(serverFile,JSON.stringify(server));serverWorker=start(xray,['run','-c',serverFile]);await ready(entry,serverWorker);await request('guard');
+  console.log('PASS sniffed SNI block reproduced and scoped line transport rule restores connection');
   for(const name of ['guard','split','reverse'])for(const secure of [false,true]){
     const result=await request(name,secure);assert.equal(result.code,0,result.error);assert.ok(result.out===payload,`${name} returned ${result.out.length}/${payload.length} bytes of ${secure?'HTTPS':'HTTP'} content`);
   }

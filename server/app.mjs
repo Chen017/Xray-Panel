@@ -14,7 +14,7 @@ import {nodeNameEntries,assertUniqueNames,migrateSubscriptionNames} from './subs
 import {createMonitoring} from './monitoring.mjs';
 import { Store,token,digest,passwordHash,passwordVerify } from './store.mjs';
 import {addressPolicy,effectiveAddress,observeAddresses,resolveLinkedAddresses,linkedTargetHash} from '../shared/addresses.mjs';
-import { validateBundle,hashBundle,compileDevices,natEntryClients,deviceProviderProxies,deviceProviderLinks,deviceProviderNameEntries,readSettings,patchSettings,patchRouting,keypair,hostSchema,newBundle,settingsSchema,clone } from '../shared/config.mjs';
+import { validateBundle,hashBundle,compileDevices,natEntryClients,natEntryTransportRules,deviceProviderProxies,deviceProviderLinks,deviceProviderNameEntries,readSettings,patchSettings,patchRouting,keypair,hostSchema,newBundle,settingsSchema,clone } from '../shared/config.mjs';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const version=JSON.parse(readFileSync(path.join(root,'package.json'),'utf8')).version;
@@ -77,7 +77,7 @@ export function createSystem(config) {
     for(const n of nodes){
       const inbound=n.observed?.files?.['conf/99_relay_in.json']?.inbounds?.find(i=>i.tag==='relay-entry-v4');
       if(!inbound)continue;
-      const desired=hashBundle(natEntryClients(n.id,nodes,devices,config.masterKey)),current=hashBundle((inbound.settings?.clients??[]).filter(c=>c.email?.startsWith('panel-relay-')).sort((a,b)=>a.email.localeCompare(b.email)));
+      const desired=hashBundle({clients:natEntryClients(n.id,nodes,devices,config.masterKey),rules:natEntryTransportRules(n.id,nodes,devices,config.masterKey)}),current=hashBundle({clients:(inbound.settings?.clients??[]).filter(c=>c.email?.startsWith('panel-relay-')).sort((a,b)=>a.email.localeCompare(b.email)),rules:(n.observed.files['config.json'].routing?.rules??[]).filter(r=>r.inboundTag?.includes('relay-entry-v4')&&r.user?.some(u=>u.startsWith('panel-relay-')))});
       const changed=desired!==n.natClientsHash,needsSync=desired!==current&&(changed||!n.needsSync);
       if(needsSync)markNodeSync(n);
       if(changed||needsSync){n.natClientsHash=desired;store.put('node',n.id,n);}

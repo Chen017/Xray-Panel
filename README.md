@@ -30,7 +30,7 @@
 Panel 适用于 Debian / Ubuntu 建站 VPS，需要 root、systemd、Python ≥ 3.10，并能访问 GitHub 和 GHCR。安装器补齐依赖，拉取 amd64 / arm64 Docker 镜像。
 
 ```bash
-(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.3.11/deploy/bootstrap.sh -o "$w"; bash "$w")
+(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.3.12/deploy/bootstrap.sh -o "$w"; bash "$w")
 ```
 
 域名、反向代理和 Access 按上方教程配置。
@@ -50,6 +50,8 @@ Panel 适用于 Debian / Ubuntu 建站 VPS，需要 root、systemd、Python ≥ 
 Panel 与 Agent 分别更新。Agent 重装 / 更新保留相同节点身份、CF 凭据及自定义目录，拒绝覆盖不同节点 ID；轮换 Agent Token 后，重新运行安装并粘贴同节点的新接入信息即可。
 
 v1.3.8 修复安全审查中的运行时、路由隔离、升级回滚、过期任务恢复、原生配置兼容、多节点 XHTTP 和监控问题；同时更新 Script 副本到 v2.7.13。已有节点的生效步骤与兼容变化见 [升级说明](docs/upgrade-v1.3.8.md)。
+
+v1.3.12 补齐 NAT 入口重命名与线路独立开关，并为托管关联的线路地址/端口添加按设备限定的互联规则，避免 NAT 嗅探到线路伪装域名后被回国阻断规则误拦。
 
 v1.3.11 修复 NAT IPv4 上传 / 线路 IPv6 下载的订阅、授权同步、旧配置迁移与操作界面；公开入口保持随机加密与零 RTT。需要同时升级定制 Mihomo 与相关 Agent / Script，再部署配置，详见 [升级与实测记录](docs/nat-entry-review-2026-11-05.md)。
 
