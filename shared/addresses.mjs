@@ -49,6 +49,15 @@ export function resolveLinkedAddresses(bundle,nodes) {
     const address=effectiveAddress(target,landing.addressFamily??'ipv4');
     if(!address)throw Error('关联落地没有可用的公网地址，请设置手动覆盖或等待探测');
     landing.landing_ip=address;landing.landing_port=current.external_port??current.listen_port;
+    if(current.entry_listen_port&&current.entry_listen_port>0){
+      landing.entry_port=current.entry_external_port??current.entry_listen_port;
+      if(current.entry_uuid)landing.entry_uuid=current.entry_uuid;
+      if(current.entry_encryption)landing.entry_encryption=current.entry_encryption;
+    } else {
+      delete landing.entry_port;
+      delete landing.entry_uuid;
+      delete landing.entry_encryption;
+    }
     // Change only the linked transport destination; preserve unrelated routing and clients.
     for(const outbound of b.files['config.json'].outbounds??[]) {
       if(outbound.tag===`relay-out-${landing.id}`||outbound.tag==='relay-out'&&landing===landings[0]) {

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { compileDevices,providerProxies,providerLinks,readSettings,patchSettings,patchRouting,hashBundle,validateBundle,vlessLink,newBundle } from '../shared/config.mjs';
+import { compileDevices,providerProxies,providerLinks,deviceProviderProxies,deviceProviderLinks,readSettings,patchSettings,patchRouting,hashBundle,validateBundle,vlessLink,newBundle } from '../shared/config.mjs';
 import { settings,fixtureBundle } from './helpers.mjs';
 const master='a'.repeat(64),node={id:randomUUID(),name:'东京 "线路"',ipv4:'203.0.113.1',ipv6:'2001:db8::1'};
 function device(){return{id:randomUUID(),epoch:randomUUID(),revoked:false,grants:[{nodeId:node.id,routes:['direct'],modes:['split','single4','single6','vision4','vision6']}]};}
@@ -52,4 +52,76 @@ test('each inbound file keeps its native XHTTP fields in exported links',()=>{
   assert.equal(extra.downloadSettings.xhttpSettings.path,'/second');
   const first=links.find(url=>url.port==='443'&&url.searchParams.get('type')==='xhttp');assert.equal(JSON.parse(first.searchParams.get('extra')).uplinkHTTPMethod,'PUT');
   assert.ok(!JSON.stringify(providerProxies(node,compiled,d,master)).includes(second.privateKey));
+});
+
+test('landing dual inbounds and Scheme 1 NAT v4 entry compilation',()=>{
+  const d=device(),master='master-test-key-32-chars-minimum!!';
+  const entry_uuid=randomUUID(),transport_uuid=randomUUID();
+  const landingRelay={role:'landing',transport_uuid,decryption:'mlkem768x25519plus.native.0rtt.key',encryption:'mlkem768x25519plus.native.0rtt.key',listen_port:24443,external_port:34443,landing_ip:'8.8.8.8',peer_ip:'',entry_listen_port:25555,entry_external_port:35555,entry_uuid,entry_decryption:'mlkem768x25519plus.random.0rtt.100-111-1111.75-0-111.50-0-3333.deckey',entry_encryption:'mlkem768x25519plus.random.0rtt.100-111-1111.75-0-111.50-0-3333.enckey'};
+  const b=patchRouting(fixtureBundle(),{relay:landingRelay});
+  delete b.files['conf/VLESS-443.json'];
+  const inbounds=b.files['conf/99_relay_in.json'].inbounds;
+  assert.equal(inbounds.length,2);
+  assert.equal(inbounds[0].tag,'relay-in');
+  assert.equal(inbounds[1].tag,'relay-entry-v4');
+  assert.equal(inbounds[1].port,25555);
+  assert.equal(inbounds[1].settings.clients[0].id,entry_uuid);
+
+  const landingNode={id:randomUUID(),name:'HK-NAT',ipv4:'8.8.8.8',ipv6:'',enabled:true,settings:null,draft:b,applied:b};
+  d.grants=[{nodeId:landingNode.id,routes:['direct'],modes:['vision4']}];
+  const compiled=compileDevices(b,landingNode,[d],master);
+  landingNode.applied=compiled;
+  const entryClients=compiled.files['conf/99_relay_in.json'].inbounds[1].settings.clients;
+  assert.ok(entryClients.some(c=>c.email===`panel-${d.id}-direct`));
+
+  const proxies=deviceProviderProxies([landingNode],d,master);
+  assert.equal(proxies.length,1);
+  assert.equal(proxies[0].port,35555);
+  assert.equal(proxies[0].tls,false);
+  assert.equal(proxies[0].flow,'xtls-rprx-vision');
+  assert.equal(proxies[0].encryption,'mlkem768x25519plus.random.0rtt.100-111-1111.75-0-111.50-0-3333.enckey');
+
+  const links=deviceProviderLinks([landingNode],d,master);
+  assert.equal(links.length,1);
+  const u=new URL(links[0]);
+  assert.equal(u.protocol,'vless:');
+  assert.equal(u.port,'35555');
+  assert.equal(u.searchParams.get('security'),'none');
+  assert.equal(u.searchParams.get('type'),'tcp');
+  assert.equal(u.searchParams.get('flow'),'xtls-rprx-vision');
+  assert.equal(u.searchParams.get('encryption'),'mlkem768x25519plus.random.0rtt.100-111-1111.75-0-111.50-0-3333.enckey');
+});
+
+test('line node NAT v4 split dialer-proxy and vision4 entry export',()=>{
+  const d=device(),master='master-test-key-32-chars-minimum!!';
+  const entry_uuid=randomUUID(),transport_uuid=randomUUID();
+  const landing={id:'1',name:'HK-NAT-Landing',landing_ip:'203.0.113.10',landing_port:34443,transport_uuid,client_uuid:randomUUID(),encryption:'mlkem768x25519plus.native.0rtt.key',entry_port:35555,entry_uuid,entry_encryption:'mlkem768x25519plus.random.0rtt.100-111-1111.75-0-111.50-0-3333.enckey='};
+  const b=patchRouting(fixtureBundle(),{relay:{role:'line',landings:[landing],failover:{enabled:false,interval:'60s',order:[]}}});
+  const lineNode={id:randomUUID(),name:'HK-Line',ipv4:'198.51.100.1',ipv6:'2001:db8::1',enabled:true,settings:settings(),draft:b,applied:b};
+  d.grants=[{nodeId:lineNode.id,routes:['1'],modes:['split','single4','vision4']}];
+  const compiled=compileDevices(b,lineNode,[d],master);
+  lineNode.applied=compiled;
+  const proxies=deviceProviderProxies([lineNode],d,master);
+  const guardName=`${lineNode.name} · ${landing.name} · NAT-v4-Entry`;
+  const splitProxy=proxies.find(p=>p.name.includes('split'));
+  assert.ok(splitProxy);
+  assert.equal(splitProxy['dialer-proxy'],guardName);
+
+  const single4Proxy=proxies.find(p=>p.name.includes('single4'));
+  assert.ok(single4Proxy);
+  assert.equal(single4Proxy['dialer-proxy'],guardName);
+
+  const vision4Proxy=proxies.find(p=>p.name.includes('vision4'));
+  assert.ok(vision4Proxy);
+  assert.equal(vision4Proxy.server,'203.0.113.10');
+  assert.equal(vision4Proxy.port,35555);
+  assert.equal(vision4Proxy.tls,false);
+  assert.equal(vision4Proxy.flow,'xtls-rprx-vision');
+  assert.equal(vision4Proxy.encryption,'mlkem768x25519plus.random.0rtt.100-111-1111.75-0-111.50-0-3333.enckey');
+
+  const guardProxy=proxies.find(p=>p.name===guardName);
+  assert.ok(guardProxy);
+  assert.equal(guardProxy.server,'203.0.113.10');
+  assert.equal(guardProxy.port,35555);
+  assert.equal(guardProxy.tls,false);
 });

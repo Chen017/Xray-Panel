@@ -56,7 +56,7 @@ _detect_cdn() {
         printf 'CDN:%s|%s\n' "$provider" "$evidence"
         return
     fi
-    ips=$(awk '{for(i=1;i<=NF;i++) if ($i ~ /^([0-9]+\.){3}[0-9]+$/ || ($i ~ /:/ && $i ~ /^[0-9a-fA-F:]+$/)) print $i}' <<< "$records")
+    ips=$(awk '{for(i=1;i<=NF;i++) if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ || ($i ~ /:/ && $i ~ /^[0-9a-fA-F:]+$/)) print $i}' <<< "$records")
     if [[ -z "$ips" ]]; then
         echo 'CDN_UNKNOWN|DNS未取得地址，无法判断'
     else

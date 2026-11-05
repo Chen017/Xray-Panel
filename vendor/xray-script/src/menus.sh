@@ -63,17 +63,31 @@ _get_overview() {
                 local lip=$(jq -r '.[0].landing_ip // ""' <<< "$landings_json")
                 local lport=$(jq -r '.[0].landing_port // ""' <<< "$landings_json")
                 local lname=$(jq -r '.[0].name // ""' <<< "$landings_json")
-                _ov_relay_status="${cyan}[中继]${none} 线路 → ${green}${lname}(${lip}:${lport})${none}${fo_info}"
+                local leport=$(jq -r '.[0].entry_port // 0' <<< "$landings_json")
+                local entry_tag=""
+                if [[ "$leport" =~ ^[0-9]+$ ]] && (( leport > 0 )); then
+                    entry_tag=" ${green}[NAT-v4方案一:${lip}:${leport}]${none}"
+                fi
+                _ov_relay_status="${cyan}[中继]${none} 线路 → ${green}${lname}(${lip}:${lport})${none}${entry_tag}${fo_info}"
             elif (( count > 1 )); then
-                _ov_relay_status="${cyan}[中继]${none} 线路 → 已绑定 ${green}${count}${none} 台落地机${fo_info}"
+                local entry_count=$(jq -r '[.[] | select((.entry_port // 0) > 0)] | length' <<< "$landings_json" 2>/dev/null || echo 0)
+                local entry_tag=""
+                (( entry_count > 0 )) && entry_tag=" ${green}[NAT-v4方案一:${entry_count}台]${none}"
+                _ov_relay_status="${cyan}[中继]${none} 线路 → 已绑定 ${green}${count}${none} 台落地机${entry_tag}${fo_info}"
             fi
         elif [[ $role == landing ]]; then
             local l_pip=$(jq -r '.peer_ip // ""' "$is_relay_state_file")
             local l_port=$(jq -r '.listen_port // ""' "$is_relay_state_file")
+            local l_elport=$(jq -r '.entry_listen_port // 0' "$is_relay_state_file")
+            local l_eext=$(jq -r '.entry_external_port // .entry_listen_port // 0' "$is_relay_state_file")
+            local entry_info=""
+            if [[ "$l_elport" =~ ^[0-9]+$ ]] && (( l_elport > 0 )); then
+                entry_info="   NAT-v4方案一过墙: ${green}${l_eext}${none}"
+            fi
             if [[ -n "$l_pip" ]]; then
-                _ov_relay_status="${cyan}[中继]${none} 落地 ← ${green}${l_pip}${none}   端口: ${green}${l_port}${none}"
+                _ov_relay_status="${cyan}[中继]${none} 落地 ← ${green}${l_pip}${none}   端口: ${green}${l_port}${none}${entry_info}"
             else
-                _ov_relay_status="${cyan}[中继]${none} 落地 (未限制白名单)   端口: ${green}${l_port}${none}"
+                _ov_relay_status="${cyan}[中继]${none} 落地 (未限制白名单)   端口: ${green}${l_port}${none}${entry_info}"
             fi
         fi
     fi
@@ -254,7 +268,13 @@ is_main_menu() {
             ;;
         2)
             if [[ ! $_ov_port && -f "$is_conf_dir/99_relay_in.json" ]]; then
-                _info "当前为纯落地机模式，无普通客户端配置；请进入菜单 4 (线路 / 落地互联) 查看中继链接"
+                local _elport=$(jq -r '.entry_listen_port // 0' "$is_relay_state_file" 2>/dev/null || echo 0)
+                if [[ "$_elport" =~ ^[0-9]+$ ]] && (( _elport > 0 )); then
+                    export_landing_vlessenc
+                    [[ $REPLY == "0" ]] && continue
+                else
+                    _info "当前为纯落地机模式，无普通客户端配置；请进入菜单 4 (线路 / 落地互联) 查看中继链接或开启 NAT v4 方案一过墙入口"
+                fi
                 pause
                 continue
             fi

@@ -15,6 +15,12 @@ class ReportTests(unittest.TestCase):
   rule=r['sources'][0]['rules'][1];self.assertEqual(rule['family'],'IPv4');self.assertEqual(rule['source'],'1.1.1.1/32');self.assertEqual(rule['ports'],'22');self.assertEqual(rule['action'],'ACCEPT')
   self.assertEqual(r['sources'][1]['status'],'permission-denied');self.assertEqual(r['manual']['closed'],[9999]);self.assertEqual(r['automatic'][0]['family'],'IPv6')
   self.assertEqual(m.firewall(available=lambda _:None)['status'],'unsupported')
+ def test_firewall_automatic_detects_relay_and_nat_entry_inbounds(self):
+  bundle={'files':{'relay.json':{'peer_ip':'203.0.113.1'},'conf/99_relay_in.json':{'inbounds':[{'tag':'relay-in','port':24443,'listen':'0.0.0.0','streamSettings':{'security':'none'}},{'tag':'relay-entry-v4','port':34443,'listen':'0.0.0.0','streamSettings':{'security':'none'}}]}}}
+  r=m.firewall(bundle,lambda _: (0,'',''),lambda _: None)
+  self.assertEqual(len(r['automatic']),2)
+  self.assertEqual(r['automatic'][0],{'port':24443,'protocol':'TCP','family':'IPv4','source':'203.0.113.1','role':'relay'})
+  self.assertEqual(r['automatic'][1],{'port':34443,'protocol':'TCP','family':'IPv4','source':'any','role':'relay-entry-v4'})
  def test_safe_cloudflare_error_excludes_response_secrets(self):
   exc=urllib.error.HTTPError('https://agent.example.com',403,'Forbidden',{},io.BytesIO(b'error code: 1010 secret=abc-token'))
   text=a.connection_error(exc);self.assertIn('HTTP 403 / CF 1010',text);self.assertIn('BIC',text);self.assertNotIn('abc-token',text)

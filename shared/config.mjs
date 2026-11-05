@@ -84,11 +84,11 @@ export function patchSettings(bundle,input) {
   return validateBundle(migrateNodeEntrypoints(b));
 }
 export const ruleSchema=z.object({type:z.literal('field'),domain:z.array(z.string().min(1)).optional(),ip:z.array(z.string().min(1)).optional(),outboundTag:z.enum(['direct','direct-v4','direct-v6','block'])}).refine(r=>!!r.domain?.length!==!!r.ip?.length,'每条规则仅填写 domain 或 ip');
-export const landingSchema=z.object({id:z.string().regex(/^\d{1,6}$/),name:z.string().min(1).max(80),landing_ip:hostSchema,landing_port:portSchema,transport_uuid:z.guid(),encryption:z.string().min(10).max(2000).refine(s=>s.startsWith('mlkem768x25519plus.')||s.startsWith('mlkem768x25519.')) ,client_uuid:z.guid(),nodeId:z.guid().optional(),addressFamily:z.enum(['ipv4','ipv6']).optional()});
+export const landingSchema=z.object({id:z.string().regex(/^\d{1,6}$/),name:z.string().min(1).max(80),landing_ip:hostSchema,landing_port:portSchema,transport_uuid:z.guid(),encryption:z.string().min(10).max(2000).refine(s=>s.startsWith('mlkem768x25519plus.')||s.startsWith('mlkem768x25519.')||s.startsWith('chacha20poly1305.')),client_uuid:z.guid(),nodeId:z.guid().optional(),addressFamily:z.enum(['ipv4','ipv6']).optional(),entry_port:portSchema.optional(),entry_uuid:z.guid().optional(),entry_encryption:z.string().min(10).max(2000).optional()});
 export const relaySchema=z.discriminatedUnion('role',[
   z.object({role:z.literal('none')}),
   z.object({role:z.literal('line'),landings:z.array(landingSchema).min(1).max(32),failover:z.object({enabled:z.boolean(),interval:z.string().regex(/^[1-9]\d{0,4}s$/),order:z.array(z.string())})}),
-  z.object({role:z.literal('landing'),transport_uuid:z.guid(),decryption:z.string().min(10).max(2000),encryption:z.string().min(10).max(2000),listen_port:portSchema,external_port:portSchema,landing_ip:hostSchema,peer_ip:z.string().refine(s=>s===''||isIP(s)===4,'来源白名单必须是 IPv4')})
+  z.object({role:z.literal('landing'),transport_uuid:z.guid(),decryption:z.string().min(10).max(2000),encryption:z.string().min(10).max(2000),listen_port:portSchema,external_port:portSchema,landing_ip:hostSchema,peer_ip:z.string().refine(s=>s===''||isIP(s)===4,'来源白名单必须是 IPv4'),entry_listen_port:z.number().int().min(0).max(65535).optional(),entry_external_port:portSchema.optional(),entry_uuid:z.guid().optional(),entry_decryption:z.string().min(10).max(2000).optional(),entry_encryption:z.string().min(10).max(2000).optional()})
 ]);
 export function patchRouting(bundle,{customRules,relay}={}) {
   const b=clone(bundle),f=b.files,m=f['config.json'];
@@ -119,7 +119,13 @@ export function patchRouting(bundle,{customRules,relay}={}) {
     const vision=i.streamSettings?.security==='reality';
     for(const [index,l] of landings.entries())i.settings.clients.push({id:l.client_uuid,email:index===0?(vision?`relay-vision-${i.tag.endsWith('_v6')?'v6':'v4'}`:'relay-xhttp'):`relay-${l.id}-${vision?`vision-${i.tag.endsWith('_v6')?'v6':'v4'}`:'xhttp'}`,...(vision?{flow:'xtls-rprx-vision'}:{})});
   }
-  if(r?.role==='landing')f['conf/99_relay_in.json']={inbounds:[{tag:'relay-in',listen:'0.0.0.0',port:r.listen_port,protocol:'vless',settings:{clients:[{id:r.transport_uuid,flow:'xtls-rprx-vision',email:'relay-transport'}],decryption:r.decryption},streamSettings:{network:'raw',security:'none'},sniffing:{enabled:true,destOverride:['http','tls','quic'],routeOnly:true}}]};
+  if(r?.role==='landing') {
+    const inbounds=[{tag:'relay-in',listen:'0.0.0.0',port:r.listen_port,protocol:'vless',settings:{clients:[{id:r.transport_uuid,flow:'xtls-rprx-vision',email:'relay-transport'}],decryption:r.decryption},streamSettings:{network:'raw',security:'none'},sniffing:{enabled:true,destOverride:['http','tls','quic'],routeOnly:true}}];
+    if(r.entry_listen_port&&r.entry_listen_port>0&&r.entry_uuid&&r.entry_decryption) {
+      inbounds.push({tag:'relay-entry-v4',listen:'0.0.0.0',port:r.entry_listen_port,protocol:'vless',settings:{clients:[{id:r.entry_uuid,flow:'xtls-rprx-vision',email:'relay-entry-v4'}],decryption:r.entry_decryption},streamSettings:{network:'raw',security:'none'},sniffing:{enabled:true,destOverride:['http','tls','quic'],routeOnly:true}});
+    }
+    f['conf/99_relay_in.json']={inbounds};
+  }
   else delete f['conf/99_relay_in.json'];
   m.routing.rules=[privateBlock(),...rules,...(f['custom_rules.json']??[]),...baseBlocks()];
   return validateBundle(migrateNodeEntrypoints(b));
@@ -132,11 +138,14 @@ export function compileDevices(base,node,devices,master) {
   const deviceRules=[];
   m.routing??={rules:[]};m.routing.domainStrategy='IPOnDemand';m.routing.rules=(m.routing.rules??[]).filter(r=>!r.user?.some(u=>u.startsWith('panel-')));
   for(const [,f] of nodeFiles(b))for(const i of managedInbounds(f)){i.settings??={};i.settings.clients=(i.settings.clients??[]).filter(c=>!c.email?.startsWith('panel-'));}
+  const landingEntryInbound=b.files['conf/99_relay_in.json']?.inbounds?.find(i=>i.tag==='relay-entry-v4');
+  if(landingEntryInbound){landingEntryInbound.settings??={};landingEntryInbound.settings.clients=(landingEntryInbound.settings.clients??[]).filter(c=>!c.email?.startsWith('panel-'));}
   for(const d of devices.filter(d=>!d.revoked))for(const grant of d.grants.filter(g=>g.nodeId===node.id))for(const route of grant.routes) {
     const l=route==='direct'?null:b.files['relay.json']?.landings?.find(l=>l.id===route);
     if(route!=='direct'&&!l)continue;
     const email=`panel-${d.id}-${route}`,id=deviceUuid(master,d,node.id,route);
     for(const [,f]of nodeFiles(b))for(const i of managedInbounds(f)) i.settings.clients.push({id,email,...(i.streamSettings?.security==='reality'?{flow:'xtls-rprx-vision'}:{})});
+    if(route==='direct'&&landingEntryInbound)landingEntryInbound.settings.clients.push({id,email,flow:'xtls-rprx-vision'});
     if(l)deviceRules.push({type:'field',user:[email],...(b.files['relay.json'].failover?.enabled?{balancerTag:`relay-balancer-${route}`}:{outboundTag:`relay-out-${route}`})});
   }
   // This applies to imported legacy routing too, before any per-user or loopback rule.
@@ -151,8 +160,24 @@ export const subscriptionNameKey=(nodeId,file,route,mode)=>createHash('sha256').
 function providerEntries(node,applied,device,master,sourceFile) {
   const regular=nodeFiles(applied);
   if(regular.length>1){const regularNames=new Set(regular.map(([name])=>name));return regular.flatMap(([name,file])=>providerEntries({...node,name:`${node.name} · ${name.slice(5,-5)}`,subscriptionName:node.subscriptionName?`${node.subscriptionName} · ${name.slice(5,-5)}`:''},{files:{...Object.fromEntries(Object.entries(applied.files).filter(([n])=>!regularNames.has(n))),[name]:file}},device,master,name));}
-  const s=readSettings(applied);if(!s)return [];
+  const s=readSettings(applied);
+  const r=applied.files?.['relay.json'];
+  if(!s){
+    if(r?.role==='landing'&&r.entry_listen_port>0&&r.entry_encryption){
+      const grant=device.grants.find(g=>g.nodeId===node.id);if(!grant||!grant.routes.includes('direct'))return [];
+      const entryInbound=applied.files?.['conf/99_relay_in.json']?.inbounds?.find(i=>i.tag==='relay-entry-v4');
+      const uuid=entryInbound?.settings?.clients?.some(c=>c.email===`panel-${device.id}-direct`)?deviceUuid(master,device,node.id,'direct'):r.entry_uuid;
+      const server=node.ipv4||r.landing_ip;if(!server)return [];
+      const port=r.entry_external_port||r.entry_listen_port;
+      const key=subscriptionNameKey(node.id,'conf/99_relay_in.json','direct','vlessenc');
+      const defaultName=`${node.subscriptionName||node.name} · NAT-v4-VLESS-Enc`,customName=node.subscriptionNames?.[key]??'';
+      const p={name:customName||defaultName,type:'vless',server,port,uuid,network:'tcp',tls:false,udp:true,tfo:true,mptcp:true,'packet-encoding':'xudp',flow:'xtls-rprx-vision',encryption:(r.entry_encryption||'').replace(/=+$/,'')};
+      return [{proxy:p,settings:{xhttp:{}},key,nodeId:node.id,file:'conf/99_relay_in.json',route:'direct',mode:'vlessenc',defaultName,customName}];
+    }
+    return [];
+  }
   const result=[],grant=device.grants.find(g=>g.nodeId===node.id);if(!grant)return [];
+  const emittedGuards=new Set();
   for(const route of grant.routes)for(const mode of grant.modes) {
     const uuid=deviceUuid(master,device,node.id,route),email=`panel-${device.id}-${route}`;
     const files=nodeFiles(applied);if(!files.some(([,f])=>managedInbounds(f).every(i=>i.settings?.clients?.some(c=>c.id===uuid&&c.email===email))))continue;
@@ -161,10 +186,27 @@ function providerEntries(node,applied,device,master,sourceFile) {
     const sni=f=>f==='4'?s.sni4:s.sni6,sid=f=>f==='4'?s.shortIds4[0]:(s.shortIds6[1]??s.shortIds6[0]);
     const transport=f=>({server:addr(f),port:s.port,tls:true,servername:sni(f),'client-fingerprint':f===family?'chrome':'firefox',alpn:['h2'],'reality-opts':{'public-key':s.publicKey,'short-id':sid(f)}});
     const landing=applied.files['relay.json']?.landings?.find(l=>l.id===route);
+    const hasNatV4=!!(landing?.entry_port&&landing.entry_port>0&&landing.entry_encryption);
+    const guardName=`${node.subscriptionName||node.name} · ${landing?.name??route} · NAT-v4-Entry`;
+    const guardProxy=hasNatV4?{name:guardName,type:'vless',server:landing.landing_ip,port:landing.entry_port,uuid:landing.entry_uuid||uuid,network:'tcp',tls:false,udp:true,tfo:true,mptcp:true,'packet-encoding':'xudp',flow:'xtls-rprx-vision',encryption:(landing.entry_encryption||'').replace(/=+$/,'')}:null;
     const file=sourceFile??regular[0][0],key=subscriptionNameKey(node.id,file,route,mode),defaultName=`${node.subscriptionName||node.name} · ${route==='direct'?'直出':landing?.name??route} · ${mode}`,customName=node.subscriptionNames?.[key]??'';
+
+    if(hasNatV4&&mode==='vision4'){
+      const p={...guardProxy,name:customName||defaultName};
+      result.push({proxy:p,settings:s,key,nodeId:node.id,file,route,mode,defaultName,customName});
+      continue;
+    }
     const p={name:customName||defaultName,type:'vless',...transport(family),uuid,udp:true,tfo:true,mptcp:true,'packet-encoding':'xudp',encryption:'none'};
     if(mode.startsWith('vision')){p.network='tcp';p.flow='xtls-rprx-vision';}
     else {p.network='xhttp';p['xhttp-opts']={...mihomoXhttp(s.xhttp),host:s.xhttp.host||sni(family),path:s.path};if(split)p['xhttp-opts']['download-settings']={...transport(down),host:s.xhttp.host||sni(down),path:s.path,'reuse-settings':{'max-concurrency':'8-16','c-max-reuse-times':0,'h-max-request-times':'300-600','h-max-reusable-secs':'2400-3600','h-keep-alive-period':0}};}
+    if(hasNatV4){
+      if(split&&!s.v6Uplink)p['dialer-proxy']=guardName;
+      else if(mode==='single4')p['dialer-proxy']=guardName;
+      if(p['dialer-proxy']&&!emittedGuards.has(guardName)){
+        emittedGuards.add(guardName);
+        result.push({proxy:guardProxy,settings:s,key:subscriptionNameKey(node.id,file,route,'nat4-entry'),nodeId:node.id,file,route,mode:'nat4-entry',defaultName:guardName,customName:''});
+      }
+    }
     const window=device.downloadWindows?.[key];
     if(split&&Number.isInteger(window)&&window>0&&window<=H2_WINDOW_MAX)p['xhttp-opts']['download-settings']['h2-max-receive-buffer-per-stream']=window;
     result.push({proxy:p,settings:s,key,nodeId:node.id,file,route,mode,defaultName,customName});
@@ -188,7 +230,12 @@ export function deviceProviderProxies(nodes,device,master){return deviceProvider
 export function deviceProviderLinks(nodes,device,master){return deviceProviderEntries(nodes,device,master).map(({proxy,settings})=>vlessLink(proxy,settings));}
 export function deviceProviderNameEntries(nodes,device,master){return deviceProviderEntries(nodes,device,master).map(({proxy,settings,...entry})=>({...entry,name:proxy.name}));}
 export function vlessLink(proxy,settings) {
-  const p=proxy,q=new URLSearchParams({encryption:'none',security:'reality',sni:p.servername,fp:p['client-fingerprint'],pbk:p['reality-opts']['public-key'],sid:p['reality-opts']['short-id'],alpn:(p.alpn??['h2']).join(','),type:p.network==='xhttp'?'xhttp':'tcp'});
+  const p=proxy;
+  if(p.tls===false){
+    const q=new URLSearchParams({encryption:p.encryption||'none',security:'none',flow:p.flow||'xtls-rprx-vision',type:'tcp'});
+    return `vless://${p.uuid}@${p.server.includes(':')?`[${p.server}]`:p.server}:${p.port}?${q}#${encodeURIComponent(p.name)}`;
+  }
+  const q=new URLSearchParams({encryption:'none',security:'reality',sni:p.servername,fp:p['client-fingerprint'],pbk:p['reality-opts']['public-key'],sid:p['reality-opts']['short-id'],alpn:(p.alpn??['h2']).join(','),type:p.network==='xhttp'?'xhttp':'tcp'});
   if(p.network==='tcp')q.set('flow','xtls-rprx-vision');
   else {q.set('mode',p['xhttp-opts'].mode||'auto');q.set('path',p['xhttp-opts'].path);q.set('host',p['xhttp-opts'].host);const extra={...settings.xhttp,host:p['xhttp-opts'].host,path:p['xhttp-opts'].path};const d=p['xhttp-opts']['download-settings'];if(d)extra.downloadSettings={address:d.server,port:d.port,network:'xhttp',security:'reality',realitySettings:{fingerprint:d['client-fingerprint'],serverName:d.servername,publicKey:d['reality-opts']['public-key'],shortId:d['reality-opts']['short-id']},xhttpSettings:{...settings.xhttp,host:d.host,path:d.path}};q.set('extra',JSON.stringify(extra));}
   return `vless://${p.uuid}@${p.server.includes(':')?`[${p.server}]`:p.server}:${p.port}?${q}#${encodeURIComponent(p.name)}`;

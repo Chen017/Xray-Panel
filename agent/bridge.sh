@@ -66,6 +66,7 @@ case ${1:-} in
         done < <(relay_get_landings | jq -c '.[]')
         exit "$test_failed";;
     relay-keygen) relay_generate_vlessenc && jq -n --arg decryption "$vlessenc_decryption" --arg encryption "$vlessenc_encryption" '{decryption:$decryption,encryption:$encryption}';;
+    relay-entry-keygen) relay_generate_vlessenc_entry random && jq -n --arg decryption "$entry_vlessenc_decryption" --arg encryption "$entry_vlessenc_encryption" '{decryption:$decryption,encryption:$encryption}';;
     uninstall)
         [[ $is_core_dir == /usr/local/etc/xray ]] || { _fail 'Uninstall requires the standard Xray root'; exit 1; }
         prompt_confirm() { return 0; }; uninstall;;

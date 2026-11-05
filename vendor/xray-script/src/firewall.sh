@@ -11,11 +11,11 @@ firewall_tool_available() {
 
 firewall_sync() {
     [[ ${config_staging:-0} == 1 ]] && return 0
-    local role="" peer="" relay_port="" ports state='{"open":[],"closed":[]}' tool active next p signature cached=1
+    local role="" peer="" relay_port="" entry_port="0" ports state='{"open":[],"closed":[]}' tool active next p signature cached=1
     [[ ! -f "$firewall_ports_file" ]] || state=$(cat "$firewall_ports_file")
     if [[ -f "$is_relay_state_file" ]]; then
         # A non-whitespace separator preserves an empty peer field.
-        IFS='|' read -r role peer relay_port < <(jq -r '[.role // "", .peer_ip // "", (.listen_port // 0 | tostring)] | join("|")' "$is_relay_state_file")
+        IFS='|' read -r role peer relay_port entry_port < <(jq -r '[.role // "", .peer_ip // "", (.listen_port // 0 | tostring), (.entry_listen_port // 0 | tostring)] | join("|")' "$is_relay_state_file")
     fi
     if ! firewall_tool_available iptables; then
         if [[ $role == landing ]]; then
@@ -28,7 +28,7 @@ firewall_sync() {
     ports=$(jq -sr --argjson state "$state" '
         ([.[] | .inbounds[]? | select(.streamSettings.security == "reality") | .port] + $state.open) |
         unique - $state.closed | .[]' "$is_conf_dir"/*.json 2>/dev/null) || return 1
-    signature=$(printf '%s\n' firewall-v2 "$ports" "$state" "$role" "$peer" "$relay_port" | sha256sum | awk '{print $1}')
+    signature=$(printf '%s\n' firewall-v2 "$ports" "$state" "$role" "$peer" "$relay_port" "$entry_port" | sha256sum | awk '{print $1}')
     if [[ $(cat "$is_core_dir/.firewall-signature" 2>/dev/null) == "$signature" ]]; then
         for tool in iptables ip6tables; do
             firewall_tool_available "$tool" || continue
@@ -58,6 +58,9 @@ firewall_sync() {
                     return 1
                 fi
             fi
+            if [[ "$entry_port" =~ ^[0-9]+$ ]] && (( entry_port >= 1 && entry_port <= 65535 )); then
+                "$tool" -w 5 -A "$next" -p tcp --dport "$entry_port" -j ACCEPT || return 1
+            fi
         fi
         while read -r p; do
             [[ -n "$p" ]] || continue
@@ -86,7 +89,7 @@ firewall_sync() {
 firewall_set_port() {
     local action="$1" p="$2" state='{"open":[],"closed":[]}'
     [[ "$p" =~ ^[0-9]{1,5}$ ]] && (( 10#$p > 0 && 10#$p <= 65535 )) || return 1
-    if [[ $(relay_get_role) == landing && $(jq -r '.listen_port' "$is_relay_state_file") == "$((10#$p))" ]]; then
+    if [[ $(relay_get_role) == landing ]] && jq -e --argjson p "$((10#$p))" '.listen_port == $p or (.entry_listen_port // 0) == $p' "$is_relay_state_file" >/dev/null 2>&1; then
         _fail "该端口用于落地互联，请在互联菜单调整或移除；来源限制由脚本维护"
         return 1
     fi

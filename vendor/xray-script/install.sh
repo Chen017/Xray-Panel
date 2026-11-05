@@ -536,16 +536,7 @@ main() {
         done
     fi
 
-    if [[ ${PANEL_UNATTENDED:-} == 1 ]]; then
-        # Xray Panel: bootstrap without a TTY; configure explicit settings in the panel.
-        # A pure landing installation starts without a listening relay until configured.
-        unset is_new_install
-        _create config.json || exit_and_del_tmpdir
-        if [[ "$install_mode" != "2" ]]; then
-            create server VLESS-REALITY || exit_and_del_tmpdir
-        fi
-        manage restart || exit_and_del_tmpdir
-    elif [[ "$install_mode" == "2" ]]; then
+    if [[ "$install_mode" == "2" ]]; then
         _step "正在配置纯落地机节点..."
         install_landing_standalone || exit_and_del_tmpdir
     else

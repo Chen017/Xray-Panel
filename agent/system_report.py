@@ -79,13 +79,15 @@ def firewall(bundle=None, run=command, available=shutil.which):
     for filename, file in files.items():
         if not filename.startswith('conf/') or not isinstance(file, dict): continue
         for inbound in file.get('inbounds', []):
-            if inbound.get('streamSettings', {}).get('security') != 'reality' and inbound.get('tag') != 'relay-in': continue
+            tag = inbound.get('tag')
+            if inbound.get('streamSettings', {}).get('security') != 'reality' and tag not in ('relay-in', 'relay-entry-v4'): continue
             port = inbound.get('port')
             if not isinstance(port, int): continue
-            relay_in = inbound.get('tag') == 'relay-in'
+            relay_in = tag == 'relay-in'
+            entry_v4 = tag == 'relay-entry-v4'
             listen = inbound.get('listen', '')
-            family = 'IPv4' if relay_in or ':' not in listen and listen not in ('', '0.0.0.0') else 'IPv6' if ':' in listen else 'IPv4/IPv6'
-            automatic.append({'port': port, 'protocol': 'TCP' if relay_in else 'TCP/UDP', 'family': family, 'source': (relay.get('peer_ip') or 'any') if relay_in else 'any', 'role': 'relay' if relay_in else 'reality'})
+            family = 'IPv4' if (relay_in or entry_v4) or ':' not in listen and listen not in ('', '0.0.0.0') else 'IPv6' if ':' in listen else 'IPv4/IPv6'
+            automatic.append({'port': port, 'protocol': 'TCP' if (relay_in or entry_v4) else 'TCP/UDP', 'family': family, 'source': (relay.get('peer_ip') or 'any') if relay_in else 'any', 'role': 'relay' if relay_in else 'relay-entry-v4' if entry_v4 else 'reality'})
     return {'checkedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'status': 'ok' if any(item['status'] == 'ok' for item in sources) else 'unsupported' if not sources else 'unavailable', 'sources': sources, 'automatic': automatic, 'manual': files.get('firewall_ports.json', {'open': [], 'closed': []}), 'notice': '系统规则清单不等于最终放行结论；不包含云防火墙、上游 ACL 或 NAT 公网可达性。'}
 
 

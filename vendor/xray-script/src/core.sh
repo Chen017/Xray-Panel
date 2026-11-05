@@ -161,8 +161,8 @@ is_port_used() {
         return
     fi
     is_cant_test_port=1
-    _fail "无法检测端口是否可用"
-    _info "请执行: $(_yellow "${cmd} update -y; ${cmd} install net-tools -y") 来修复此问题"
+    _fail "无法检测端口是否可用" >&2
+    _info "请执行: $(_yellow "${cmd} update -y; ${cmd} install net-tools -y") 来修复此问题" >&2
 }
 
 # ─── list managed regular node configs (excludes 99_relay_in.json) ───
@@ -406,7 +406,7 @@ relay_get_landings() {
         if .landings and (.landings | type == "array") then
             .landings
         elif .landing_ip then
-            [{
+            [({
                 id: "1",
                 name: (.name // "默认落地"),
                 landing_ip: .landing_ip,
@@ -414,7 +414,7 @@ relay_get_landings() {
                 transport_uuid: (.transport_uuid // ""),
                 encryption: (.encryption // ""),
                 client_uuid: (.client_uuid // "")
-            }]
+            } + (if (.entry_port // 0) > 0 then {entry_port: (.entry_port | tonumber)} + (if (.entry_uuid // "") != "" then {entry_uuid: .entry_uuid} else {} end) + (if (.entry_encryption // "") != "" then {entry_encryption: .entry_encryption} else {} end) else {} end))]
         else
             []
         end
@@ -758,7 +758,7 @@ relay_validate_uuid() {
 
 relay_validate_vless_encryption() {
     local enc="$1"
-    [[ "$enc" =~ ^[a-z0-9]+\.[a-z0-9]+\.(0rtt|[0-9]+s)\.[A-Za-z0-9_-]{40,}$ ]]
+    [[ "$enc" =~ ^[a-z0-9]+\.[a-z0-9]+\.(0rtt|1rtt|[0-9]+(-[0-9]+)?s)(\.[0-9]+-[0-9]+-[0-9]+)*\.[A-Za-z0-9_-]{40,}={0,2}$ ]]
 }
 
 relay_validate_domain() {
@@ -791,7 +791,16 @@ relay_build_link() {
     local l_ip="$2"
     local l_port="$3"
     local enc="$4"
-    echo "vless://${t_uuid}@${l_ip}:${l_port}?encryption=${enc}&security=none&type=tcp&flow=xtls-rprx-vision#Xray-Relay"
+    local entry_port="${5:-0}"
+    local entry_uuid="${6:-}"
+    local entry_enc="${7:-}"
+    local extra=""
+    if [[ "$entry_port" =~ ^[0-9]+$ ]] && (( entry_port >= 1 && entry_port <= 65535 )); then
+        extra="&entry_port=${entry_port}"
+        [[ -n "$entry_uuid" ]] && extra+="&entry_uuid=${entry_uuid}"
+        [[ -n "$entry_enc" ]] && extra+="&entry_enc=${entry_enc}"
+    fi
+    echo "vless://${t_uuid}@${l_ip}:${l_port}?encryption=${enc}&security=none&type=tcp&flow=xtls-rprx-vision${extra}#Xray-Relay"
 }
 
 relay_parse_link() {
@@ -800,6 +809,9 @@ relay_parse_link() {
     parsed_landing_ip=""
     parsed_landing_port=""
     parsed_encryption=""
+    parsed_entry_port=""
+    parsed_entry_uuid=""
+    parsed_entry_encryption=""
 
     if [[ "$link" != vless://* ]]; then
         return 1
@@ -839,6 +851,12 @@ relay_parse_link() {
     local p_sec=""
     local p_type=""
     local p_flow=""
+    local p_entry_port=""
+    local p_entry_uuid=""
+    local p_entry_enc=""
+    local has_entry_port=0
+    local has_entry_uuid=0
+    local has_entry_enc=0
     local IFS='&'
     for param in $query; do
         local key="${param%%=*}"
@@ -848,6 +866,9 @@ relay_parse_link() {
         security) p_sec="$val" ;;
         type) p_type="$val" ;;
         flow) p_flow="$val" ;;
+        entry_port) has_entry_port=1; p_entry_port="$val" ;;
+        entry_uuid) has_entry_uuid=1; p_entry_uuid="$val" ;;
+        entry_enc) has_entry_enc=1; p_entry_enc="$val" ;;
         esac
     done
 
@@ -863,11 +884,29 @@ relay_parse_link() {
     if ! relay_validate_vless_encryption "$p_enc"; then
         return 1
     fi
+    if (( has_entry_port )); then
+        if ! relay_validate_port "$p_entry_port"; then
+            return 1
+        fi
+        parsed_entry_port="$p_entry_port"
+    fi
+    if (( has_entry_uuid )); then
+        if ! relay_validate_uuid "$p_entry_uuid"; then
+            return 1
+        fi
+        parsed_entry_uuid="$p_entry_uuid"
+    fi
+    if (( has_entry_enc )); then
+        if ! relay_validate_vless_encryption "$p_entry_enc"; then
+            return 1
+        fi
+        parsed_entry_encryption="${p_entry_enc%%=*}"
+    fi
 
     parsed_transport_uuid="$t_uuid"
     parsed_landing_ip="$l_ip"
     parsed_landing_port="$l_port"
-    parsed_encryption="$p_enc"
+    parsed_encryption="${p_enc%%=*}"
     return 0
 }
 
@@ -979,12 +1018,36 @@ relay_generate_vlessenc() {
     fi
 
     if relay_validate_vless_encryption "$dec" && relay_validate_vless_encryption "$enc"; then
-        vlessenc_decryption="$dec"
-        vlessenc_encryption="$enc"
+        vlessenc_decryption="${dec%%=*}"
+        vlessenc_encryption="${enc%%=*}"
         return 0
     fi
 
     return 1
+}
+
+relay_generate_vlessenc_entry() {
+    local appearance="${1:-random}"
+    [[ "$appearance" == "random" || "$appearance" == "xorpub" || "$appearance" == "native" ]] || appearance="random"
+    local saved_dec="${vlessenc_decryption:-}" saved_enc="${vlessenc_encryption:-}"
+    entry_vlessenc_decryption=""
+    entry_vlessenc_encryption=""
+    if ! relay_generate_vlessenc; then
+        vlessenc_decryption="$saved_dec"
+        vlessenc_encryption="$saved_enc"
+        return 1
+    fi
+    local raw_dec="$vlessenc_decryption" raw_enc="$vlessenc_encryption"
+    vlessenc_decryption="$saved_dec"
+    vlessenc_encryption="$saved_enc"
+    local algo="${raw_dec%%.*}"
+    local dec_key="${raw_dec##*.}"
+    local enc_key="${raw_enc##*.}"
+    local pad="100-111-1111.75-0-111.50-0-3333"
+    entry_vlessenc_decryption="${algo}.${appearance}.600s.${pad}.${dec_key}"
+    entry_vlessenc_encryption="${algo}.${appearance}.0rtt.${pad}.${enc_key}"
+    relay_validate_vless_encryption "$entry_vlessenc_decryption" &&
+        relay_validate_vless_encryption "$entry_vlessenc_encryption"
 }
 
 # ─── relay firewall helpers ──────────────────────────────
@@ -995,48 +1058,80 @@ relay_create_landing_inbound() {
     local transport_uuid="$1"
     local decryption="$2"
     local port="$3"
+    local entry_listen_port="${4:-0}"
+    local entry_uuid="${5:-}"
+    local entry_decryption="${6:-}"
     local target_file="$is_conf_dir/99_relay_in.json"
+    [[ "$entry_listen_port" =~ ^[0-9]+$ ]] || entry_listen_port=0
 
-    local json_content=$(cat <<EOF
-{
-  "inbounds": [
-    {
-      "tag": "relay-in",
-      "listen": "0.0.0.0",
-      "port": $port,
-      "protocol": "vless",
-      "settings": {
-        "clients": [
-          {
-            "id": "$transport_uuid",
-            "flow": "xtls-rprx-vision",
-            "email": "relay-transport"
-          }
-        ],
-        "decryption": "$decryption"
-      },
-      "streamSettings": {
-        "network": "raw",
-        "security": "none"
-      },
-      "sniffing": {
-        "enabled": true,
-        "destOverride": [
-          "http",
-          "tls",
-          "quic"
-        ],
-        "routeOnly": true
-      }
-    }
-  ]
-}
-EOF
-)
-    if ! echo "$json_content" | jq . &>/dev/null; then
+    local json_content
+    json_content=$(jq -n         --arg tuuid "$transport_uuid"         --arg dec "$decryption"         --argjson port "$port"         --argjson elport "$entry_listen_port"         --arg euuid "$entry_uuid"         --arg edec "$entry_decryption" '
+        {
+          inbounds: (
+            [
+              {
+                tag: "relay-in",
+                listen: "0.0.0.0",
+                port: $port,
+                protocol: "vless",
+                settings: {
+                  clients: [
+                    {
+                      id: $tuuid,
+                      flow: "xtls-rprx-vision",
+                      email: "relay-transport"
+                    }
+                  ],
+                  decryption: $dec
+                },
+                streamSettings: {
+                  network: "raw",
+                  security: "none"
+                },
+                sniffing: {
+                  enabled: true,
+                  destOverride: ["http", "tls", "quic"],
+                  routeOnly: true
+                }
+              }
+            ] +
+            (
+              if ($elport >= 1 and $elport <= 65535 and ($euuid | length > 0) and ($edec | length > 0)) then
+                [
+                  {
+                    tag: "relay-entry-v4",
+                    listen: "0.0.0.0",
+                    port: $elport,
+                    protocol: "vless",
+                    settings: {
+                      clients: [
+                        {
+                          id: $euuid,
+                          flow: "xtls-rprx-vision",
+                          email: "relay-entry-v4"
+                        }
+                      ],
+                      decryption: $edec
+                    },
+                    streamSettings: {
+                      network: "raw",
+                      security: "none"
+                    },
+                    sniffing: {
+                      enabled: true,
+                      destOverride: ["http", "tls", "quic"],
+                      routeOnly: true
+                    }
+                  }
+                ]
+              else [] end
+            )
+          )
+        }
+    ') || {
         _fail "生成的 99_relay_in.json 格式异常"
         return 1
-    fi
+    }
     atomic_json "$target_file" "$json_content"
 }
 
@@ -1311,10 +1406,13 @@ relay_test() {
 
 _show_single_landing_info() {
     local landings="$1" idx="$2"
-    local lname lip lport tuuid enc cuuid
+    local lname lip lport leport leuuid leenc tuuid enc cuuid
     lname=$(jq -r ".[$idx].name // \"落地$((idx+1))\"" <<< "$landings")
     lip=$(jq -r ".[$idx].landing_ip // \"\"" <<< "$landings")
     lport=$(jq -r ".[$idx].landing_port // \"\"" <<< "$landings")
+    leport=$(jq -r ".[$idx].entry_port // 0" <<< "$landings")
+    leuuid=$(jq -r ".[$idx].entry_uuid // \"\"" <<< "$landings")
+    leenc=$(jq -r ".[$idx].entry_encryption // \"\"" <<< "$landings")
     tuuid=$(jq -r ".[$idx].transport_uuid // \"\"" <<< "$landings")
     enc=$(jq -r ".[$idx].encryption // \"\"" <<< "$landings")
     cuuid=$(jq -r ".[$idx].client_uuid // \"\"" <<< "$landings")
@@ -1322,10 +1420,17 @@ _show_single_landing_info() {
     _kv "备注名称:" "$lname"
     _kv "角色:" "线路机 (line)"
     _kv "落地地址:" "$lip"
-    _kv "落地端口:" "$lport"
+    _kv "落地互联端口:" "$lport"
+    if [[ "$leport" =~ ^[0-9]+$ ]] && (( leport > 0 )); then
+        _kv "NAT-v4方案一:" "已开启 (${lip}:${leport}, VLESS Encryption)"
+        [[ -z "$leuuid" ]] || _kv "NAT-v4过墙UUID:" "$leuuid"
+        [[ -z "$leenc" ]] || _kv "NAT-v4加密参数:" "$leenc"
+    else
+        _kv "NAT-v4方案一:" "未开启"
+    fi
     _kv "中继传输 UUID:" "$tuuid"
     _kv "专属客户端 UUID:" "$cuuid"
-    _kv "加密参数:" "$enc"
+    _kv "互联加密参数:" "$enc"
 }
 
 relay_view_info_line() {
@@ -1378,6 +1483,11 @@ relay_view_info_landing() {
     local pip=$(jq -r '.peer_ip // ""' "$is_relay_state_file")
     local lport=$(jq -r '.listen_port // ""' "$is_relay_state_file")
     local ext_port=$(jq -r '.external_port // .listen_port // ""' "$is_relay_state_file")
+    local elport=$(jq -r '.entry_listen_port // 0' "$is_relay_state_file")
+    local eext_port=$(jq -r '.entry_external_port // .entry_listen_port // 0' "$is_relay_state_file")
+    local euuid=$(jq -r '.entry_uuid // ""' "$is_relay_state_file")
+    local edec=$(jq -r '.entry_decryption // ""' "$is_relay_state_file")
+    local eenc=$(jq -r '.entry_encryption // ""' "$is_relay_state_file")
     local tuuid=$(jq -r '.transport_uuid // ""' "$is_relay_state_file")
     local dec=$(jq -r '.decryption // ""' "$is_relay_state_file")
     local enc=$(jq -r '.encryption // ""' "$is_relay_state_file")
@@ -1396,6 +1506,14 @@ relay_view_info_landing() {
     echo
     _kv "落地解密参数:" "$dec"
     _kv "线路加密参数:" "$enc"
+    if [[ "$elport" =~ ^[0-9]+$ ]] && (( elport > 0 )); then
+        echo
+        _kv "NAT-v4过墙监听:" "$elport (方案一: VLESS Encryption random + 1-RTT Padding)"
+        [[ "$eext_port" == "$elport" ]] || _kv "NAT-v4过墙外网:" "$eext_port"
+        _kv "NAT-v4过墙UUID:" "$euuid"
+        _kv "NAT-v4过墙解密:" "$edec"
+        _kv "NAT-v4过墙加密:" "$eenc"
+    fi
     echo
 
     if ! relay_validate_host "$landing_pub_ip"; then
@@ -1418,7 +1536,7 @@ relay_view_info_landing() {
         return 1
     fi
 
-    local relay_link=$(relay_build_link "$tuuid" "$landing_pub_ip" "$ext_port" "$enc")
+    local relay_link=$(relay_build_link "$tuuid" "$landing_pub_ip" "$ext_port" "$enc" "$eext_port" "$euuid" "$eenc")
     _step "中继导入链接:"
     echo
     _green "$relay_link"
@@ -1665,12 +1783,17 @@ relay_menu() {
                 fo_tag="${green}[故障转移: 开(${fo_int})]${none}"
             fi
             echo -e "  ${cyan}角色:${none} ${green}线路机${none} (已绑定 ${green}${count}${none} 台落地机) $fo_tag"
-            local i l_name l_ip l_port
+            local i l_name l_ip l_port l_eport l_etag
             for (( i=0; i<count; i++ )); do
                 l_name=$(jq -r ".[$i].name // \"落地$((i+1))\"" <<< "$landings_json")
                 l_ip=$(jq -r ".[$i].landing_ip // \"\"" <<< "$landings_json")
                 l_port=$(jq -r ".[$i].landing_port // \"\"" <<< "$landings_json")
-                echo -e "  ${green}$((i+1)))${none} [${cyan}${l_name}${none}] ${l_ip}:${l_port}"
+                l_eport=$(jq -r ".[$i].entry_port // 0" <<< "$landings_json")
+                l_etag=""
+                if [[ "$l_eport" =~ ^[0-9]+$ ]] && (( l_eport > 0 )); then
+                    l_etag=" ${green}[NAT-v4方案一:${l_ip}:${l_eport}]${none}"
+                fi
+                echo -e "  ${green}$((i+1)))${none} [${cyan}${l_name}${none}] ${l_ip}:${l_port}${l_etag}"
             done
             echo
             _section "操作"
@@ -1679,8 +1802,9 @@ relay_menu() {
             _menu 3 "测试落地连通性"
             _menu 4 "解除落地绑定"
             _menu 5 "落地故障转移与回退设置"
+            _menu 6 "设置落地机 NAT v4 方案一过墙 (VLESS Encryption)"
             echo
-            echo -ne "  请选择 [${green}1-5${none}] [${red}0 返回主菜单${none}]: "
+            echo -ne "  请选择 [${green}1-6${none}] [${red}0 返回主菜单${none}]: "
             read -r REPLY || return 1
             [[ "$REPLY" == "0" ]] && return
             case $REPLY in
@@ -1703,11 +1827,18 @@ relay_menu() {
             5)
                 relay_menu_failover
                 ;;
+            6)
+                relay_menu_entry_port
+                pause
+                ;;
             esac
         elif [[ "$role" == "landing" ]]; then
             local r_pip=$(jq -r '.peer_ip // ""' "$is_relay_state_file" 2>/dev/null)
             local r_lport=$(jq -r '.listen_port // ""' "$is_relay_state_file" 2>/dev/null)
             local r_ext=$(jq -r '.external_port // .listen_port // ""' "$is_relay_state_file" 2>/dev/null)
+            local r_elport=$(jq -r '.entry_listen_port // 0' "$is_relay_state_file" 2>/dev/null)
+            local r_eext=$(jq -r '.entry_external_port // .entry_listen_port // 0' "$is_relay_state_file" 2>/dev/null)
+            local r_pport=$(jq -r '.peer_port // 443' "$is_relay_state_file" 2>/dev/null)
             echo -e "  ${cyan}角色:${none} ${green}落地机${none}"
             if [[ -n "$r_pip" ]]; then
                 echo -e "  ${cyan}线路:${none} ${green}${r_pip}${none}"
@@ -1719,12 +1850,18 @@ relay_menu() {
             else
                 echo -e "  ${cyan}监听:${none} ${green}${r_lport}${none}"
             fi
+            if [[ "$r_elport" =~ ^[0-9]+$ ]] && (( r_elport > 0 )); then
+                echo -e "  ${cyan}NAT-v4方案一:${none} ${green}${r_elport}${none} (外网: ${green}${r_eext}${none}, VLESS Encryption)"
+            else
+                echo -e "  ${cyan}NAT-v4方案一:${none} ${gray}未开启${none}"
+            fi
             echo
             _section "操作"
             _menu 1 "查看 / 复制中继链接"
             _menu 2 "解除落地配置"
+            _menu 3 "配置 / 切换 NAT v4 方案一过墙入口 (VLESS Encryption)"
             echo
-            echo -ne "  请选择 [${green}1-2${none}] [${red}0 返回主菜单${none}]: "
+            echo -ne "  请选择 [${green}1-3${none}] [${red}0 返回主菜单${none}]: "
             read -r REPLY || return 1
             [[ "$REPLY" == "0" ]] && return
             case $REPLY in
@@ -1734,6 +1871,10 @@ relay_menu() {
                 ;;
             2)
                 relay_remove_landing
+                pause
+                ;;
+            3)
+                relay_configure_landing_entry
                 pause
                 ;;
             esac
@@ -1758,12 +1899,25 @@ change_landing() {
             rules_count=$(jq -er 'if type == "array" then length else 0 end' "$is_custom_rules_file" 2>/dev/null || echo 0)
         fi
         echo -e "  ${cyan}[自定义分流规则]${none} ${green}${rules_count}${none} 条"
+        local _elport=0 _eext=0 _pip="" _pport=443
+        if [[ -f "$is_relay_state_file" ]]; then
+            _elport=$(jq -r '.entry_listen_port // 0' "$is_relay_state_file" 2>/dev/null || echo 0)
+            _eext=$(jq -r '.entry_external_port // .entry_listen_port // 0' "$is_relay_state_file" 2>/dev/null || echo 0)
+            _pip=$(jq -r '.peer_ip // ""' "$is_relay_state_file" 2>/dev/null)
+            _pport=$(jq -r '.peer_port // 443' "$is_relay_state_file" 2>/dev/null || echo 443)
+        fi
+        if [[ "$_elport" =~ ^[0-9]+$ ]] && (( _elport > 0 )); then
+            echo -e "  ${cyan}[NAT-v4方案一]${none} ${green}已开启${none} (监听: ${green}${_elport}${none}, 公网: ${green}${_eext}${none}, VLESS Encryption)"
+        else
+            echo -e "  ${cyan}[NAT-v4方案一]${none} ${gray}未开启${none}"
+        fi
         echo
         _section "请选择更改项目"
         _menu 1 "管理自定义分流规则"
         _menu 2 "切换出站 IP 优先 (当前: $(outbound_label "$_cur_out_strategy"))"
+        _menu 3 "配置 / 切换 NAT v4 方案一过墙入口 (VLESS Encryption)"
         echo
-        echo -ne "  请选择 [${green}1-2${none}] [${red}0 返回${none}]: "
+        echo -ne "  请选择 [${green}1-3${none}] [${red}0 返回${none}]: "
         read -r REPLY || return 1
         [[ "$REPLY" == "0" || -z "$REPLY" ]] && { REPLY=0; return 0; }
         case $REPLY in
@@ -1773,6 +1927,10 @@ change_landing() {
         2)
             choose_outbound_strategy
             [[ $REPLY != 0 ]] && pause
+            ;;
+        3)
+            relay_configure_landing_entry
+            pause
             ;;
         *)
             _fail "输入有误，请重试"

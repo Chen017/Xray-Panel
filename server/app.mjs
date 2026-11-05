@@ -32,7 +32,7 @@ const subscriptionName=z.string().trim().max(120).refine(s=>!/[\x00-\x1f\x7f]/.t
 const namesRecord=z.record(z.string().regex(/^[0-9a-f]{40}$/),subscriptionName).refine(v=>Object.keys(v).length<=5000,'一次最多修改 5000 条名称');
 const nodeOrderSchema=z.object({revision:z.number().int().nonnegative(),order:z.array(idSchema).max(10000).refine(ids=>new Set(ids).size===ids.length,'排序包含重复节点')});
 const nodeNamesSchema=z.object({revision:z.number().int().nonnegative(),subscriptionName:subscriptionName,names:namesRecord});
-const actionSchema=z.enum(['inspect','detect-addresses','firewall-status','validate','dump','logs','start','stop','restart','enable','disable','update-core','update-script','update-geodata','maintenance','bbr','diagnostics','relay-test','relay-keygen','uninstall','install-standard','install-landing']);
+const actionSchema=z.enum(['inspect','detect-addresses','firewall-status','validate','dump','logs','start','stop','restart','enable','disable','update-core','update-script','update-geodata','maintenance','bbr','diagnostics','relay-test','relay-keygen','relay-entry-keygen','uninstall','install-standard','install-landing']);
 export const MAX_BACKUP_BYTES=64*1024*1024;
 const MAX_BACKUP_RECORDS=100000;
 

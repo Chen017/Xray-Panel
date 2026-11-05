@@ -29,7 +29,7 @@ probes = importlib.util.module_from_spec(_probe_spec)
 _probe_spec.loader.exec_module(probes)
 ROOT_FILES = {'config.json', 'relay.json', 'custom_rules.json', 'firewall_ports.json'}
 SAFE_CONF = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,100}\.json\Z')
-ACTIONS = {'deploy', 'inspect', 'detect-addresses', 'firewall-status', 'validate', 'dump', 'logs', 'start', 'stop', 'restart', 'enable', 'disable', 'update-core', 'update-script', 'update-geodata', 'maintenance', 'bbr', 'diagnostics', 'relay-test', 'relay-keygen', 'uninstall', 'install-standard', 'install-landing'}
+ACTIONS = {'deploy', 'inspect', 'detect-addresses', 'firewall-status', 'validate', 'dump', 'logs', 'start', 'stop', 'restart', 'enable', 'disable', 'update-core', 'update-script', 'update-geodata', 'maintenance', 'bbr', 'diagnostics', 'relay-test', 'relay-keygen', 'relay-entry-keygen', 'uninstall', 'install-standard', 'install-landing'}
 
 
 def canonical(value):
