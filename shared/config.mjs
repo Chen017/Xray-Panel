@@ -158,7 +158,8 @@ export function natEntryTransportRules(nodeId,nodes,devices,master){
   const users=clients.filter(c=>c.email.startsWith(`panel-relay-${source.id}-`)).map(c=>c.email);
   const ip=[source.ipv4,source.ipv6].filter(v=>v&&isIP(v));
   const ports=[...new Set(nodeFiles((source.observed??source.applied)??{files:{}}).flatMap(([,f])=>managedInbounds(f).filter(i=>i.streamSettings?.security==='reality').map(i=>i.port)).filter(p=>Number.isInteger(p)&&p>0&&p<=65535))].sort((a,b)=>a-b);
-  if(users.length&&ip.length&&ports.length)rules.push({type:'field',inboundTag:['relay-entry-v4'],user:users,ip,port:ports.join(','),network:'tcp',outboundTag:'direct'});
+  const domain=[...new Set(nodeFiles((source.observed??source.applied)??{files:{}}).flatMap(([,f])=>managedInbounds(f).filter(i=>i.streamSettings?.security==='reality').flatMap(i=>i.streamSettings.realitySettings?.serverNames??[])))].map(s=>'full:'+s);
+  if(users.length&&ports.length)for(const target of [...(domain.length?[{domain}]:[]),...(ip.length?[{ip}]:[])])rules.push({type:'field',inboundTag:['relay-entry-v4'],user:users,...target,port:ports.join(','),network:'tcp',outboundTag:'direct'});
  }
  return rules;
 }

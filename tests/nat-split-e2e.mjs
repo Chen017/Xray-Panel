@@ -80,12 +80,16 @@ try{
   await request('guard');
   server.inbounds.find(i=>i.tag==='relay-entry-v4').sniffing={enabled:true,destOverride:['tls','http'],routeOnly:true};
   server.outbounds=[{tag:'direct',protocol:'freedom'},{tag:'block',protocol:'blackhole'}];
-  server.routing={rules:[{type:'field',domain:['full:localhost'],outboundTag:'block'}]};
+  server.dns={hosts:{localhost:'192.0.2.123'}};
+  server.routing={domainStrategy:'IPOnDemand',rules:[{type:'field',domain:['full:localhost'],outboundTag:'block'}]};
   await stop(serverWorker);fs.writeFileSync(serverFile,JSON.stringify(server));serverWorker=start(xray,['run','-c',serverFile]);await ready(entry,serverWorker);
   await request('guard');const blocked=await request('split');assert.notEqual(blocked.out,payload,'SNI block did not reproduce NAT transport failure');
   server.routing.rules.unshift({type:'field',inboundTag:['relay-entry-v4'],user:['test-nat'],ip:['127.0.0.1'],port:String(linePort),network:'tcp',outboundTag:'direct'});
   await stop(serverWorker);fs.writeFileSync(serverFile,JSON.stringify(server));serverWorker=start(xray,['run','-c',serverFile]);await ready(entry,serverWorker);await request('guard');
-  console.log('PASS sniffed SNI block reproduced and scoped line transport rule restores connection');
+  const ipOnly=await request('split');assert.notEqual(ipOnly.out,payload,'Sniffed domain DNS should differ from original transport IP');
+  server.routing.rules.unshift({type:'field',inboundTag:['relay-entry-v4'],user:['test-nat'],domain:['full:localhost'],port:String(linePort),network:'tcp',outboundTag:'direct'});
+  await stop(serverWorker);fs.writeFileSync(serverFile,JSON.stringify(server));serverWorker=start(xray,['run','-c',serverFile]);await ready(entry,serverWorker);await request('guard');
+  console.log('PASS sniffed SNI block and original-IP mismatch reproduced; scoped exact-SNI transport rule restores connection');
   for(const name of ['guard','split','reverse'])for(const secure of [false,true]){
     const result=await request(name,secure);assert.equal(result.code,0,result.error);assert.ok(result.out===payload,`${name} returned ${result.out.length}/${payload.length} bytes of ${secure?'HTTPS':'HTTP'} content`);
   }

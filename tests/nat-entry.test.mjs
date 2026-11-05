@@ -111,6 +111,6 @@ test('admin can save a NAT guard alias and all provider references follow it',as
 
 test('NAT transport exception is limited to granted users, line IPs, inbound and ports after private refusal',()=>{
  const f=topology(),bundle=compileDevices(f.target.applied,f.target,[f.device],master,f.nodes),rules=bundle.files['config.json'].routing.rules;
- assert.deepEqual(rules[0].ip,['geoip:private']);const rule=rules.find(r=>r.inboundTag?.includes('relay-entry-v4'));assert.ok(rule);assert.deepEqual(rule.ip,[f.source.ipv4,f.source.ipv6]);assert.equal(rule.port,'443');assert.equal(rule.network,'tcp');assert.deepEqual(rule.user,natEntryClients(f.target.id,f.nodes,[f.device],master).map(c=>c.email));
+ assert.deepEqual(rules[0].ip,['geoip:private']);const rule=rules.find(r=>r.inboundTag?.includes('relay-entry-v4')&&r.ip);assert.ok(rule);assert.deepEqual(rule.ip,[f.source.ipv4,f.source.ipv6]);const sniRule=rules.find(r=>r.inboundTag?.includes('relay-entry-v4')&&r.domain);assert.deepEqual(sniRule.domain,[...new Set([readSettings(f.source.applied).sni4,readSettings(f.source.applied).sni6])].map(s=>'full:'+s));assert.deepEqual(sniRule.user,rule.user);assert.equal(rule.port,'443');assert.equal(rule.network,'tcp');assert.deepEqual(rule.user,natEntryClients(f.target.id,f.nodes,[f.device],master).map(c=>c.email));
  const revoked=compileDevices(bundle,f.target,[{...f.device,revoked:true}],master,f.nodes);assert.ok(!revoked.files['config.json'].routing.rules.some(r=>r.inboundTag?.includes('relay-entry-v4')));
 });
