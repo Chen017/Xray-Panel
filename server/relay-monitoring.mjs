@@ -5,11 +5,13 @@ import {hostSchema,portSchema,readSettings} from '../shared/config.mjs';
 // destination which has not yet been applied on the source VPS.
 export const liveBundle=node=>node.observed??node.applied;
 export const isLanding=node=>liveBundle(node)?.files?.['relay.json']?.role==='landing';
+export const hasPublicEntry=node=>Number(liveBundle(node)?.files?.['relay.json']?.entry_listen_port)>0;
+export const isPrivateLanding=node=>isLanding(node)&&!hasPublicEntry(node);
 const sameHost=(a,b)=>typeof a==='string'&&typeof b==='string'&&a.toLowerCase()===b.toLowerCase();
 
 export function relayTargets(probe,nodes){
   const targets=[];
-  if(!probe.enabled||probe.report?.monitorProtocol!==3)return targets;
+  if(!probe.enabled||![3,4].includes(probe.report?.monitorProtocol))return targets;
   for(const line of nodes.filter(n=>n.enabled&&liveBundle(n)?.files?.['relay.json']?.role==='line')){
     const bundle=liveBundle(line),relay=bundle.files['relay.json'];
     if(!Array.isArray(relay.landings))continue;

@@ -10,7 +10,7 @@
 - 🔗 统一订阅：节点名称与顺序统一管理，所有设备共用；每台设备拥有独立 Token、age 公钥和节点 / 出口 UUID。
 - ⚡ 下行窗口：按设备、订阅节点独立设置 XHTTP 双栈分离的 H2 接收窗口，支持 M 单位输入与字节转换；需要支持该字段的 Mihomo fork。
 - 🛠️ 部署运维：配置先校验再应用，失败自动回滚；支持任务、日志、防火墙快照、服务控制与脚本更新。
-- 🔔 状态告警：复用 Script 的国内三网 / Cloudflare 自检，支持 Telegram 连续失败、恢复及 SNI 告警，并独立检测中转与落地双向 TCP、落地海外连通；落地不检测国内目标。
+- 🔔 状态告警：复用 Script 的国内三网 / Cloudflare 自检，支持 Telegram 连续失败、恢复及 SNI 告警，并独立检测中转与落地双向 TCP、落地海外连通；纯落地仅检测海外，启用公开 IPv4 入口的落地同时检测国内连通。
 - 🎨 界面主题：默认跟随系统，也可手动切换深色 / 浅色。
 
 面板使用 SQLite，不需要 PostgreSQL 或 Redis；不包含套餐与计费系统。功能范围见 [功能对照](docs/feature-coverage.md)。
@@ -30,7 +30,7 @@
 Panel 适用于 Debian / Ubuntu 建站 VPS，需要 root、systemd、Python ≥ 3.10，并能访问 GitHub 和 GHCR。安装器补齐依赖，拉取 amd64 / arm64 Docker 镜像。
 
 ```bash
-(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.3.8/deploy/bootstrap.sh -o "$w"; bash "$w")
+(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.3.11/deploy/bootstrap.sh -o "$w"; bash "$w")
 ```
 
 域名、反向代理和 Access 按上方教程配置。
@@ -45,11 +45,13 @@ Panel 适用于 Debian / Ubuntu 建站 VPS，需要 root、systemd、Python ≥ 
 | 日志 | `xray-panel panel logs` | `xray-panel agent logs` |
 | 卸载 | `xray-panel panel uninstall` | `xray-panel agent uninstall` |
 
-更新默认获取最新正式 Release，可加 `--version 1.3.8` 指定版本。Panel 更新前备份数据库和配置，失败恢复；沿用已有 Compose 项目、数据卷和密钥，不要在 1Panel 重建第二套项目。生成的编排是 `/opt/xray-panel-manager/panel.compose.yaml`。
+更新默认获取最新正式 Release，可加 `--version 1.3.11` 指定版本。Panel 更新前备份数据库和配置，失败恢复；沿用已有 Compose 项目、数据卷和密钥，不要在 1Panel 重建第二套项目。生成的编排是 `/opt/xray-panel-manager/panel.compose.yaml`。
 
 Panel 与 Agent 分别更新。Agent 重装 / 更新保留相同节点身份、CF 凭据及自定义目录，拒绝覆盖不同节点 ID；轮换 Agent Token 后，重新运行安装并粘贴同节点的新接入信息即可。
 
 v1.3.8 修复安全审查中的运行时、路由隔离、升级回滚、过期任务恢复、原生配置兼容、多节点 XHTTP 和监控问题；同时更新 Script 副本到 v2.7.13。已有节点的生效步骤与兼容变化见 [升级说明](docs/upgrade-v1.3.8.md)。
+
+v1.3.11 修复 NAT IPv4 上传 / 线路 IPv6 下载的订阅、授权同步、旧配置迁移与操作界面；公开入口保持随机加密与零 RTT。需要同时升级定制 Mihomo 与相关 Agent / Script，再部署配置，详见 [升级与实测记录](docs/nat-entry-review-2026-11-05.md)。
 
 默认卸载保留数据；Agent 卸载保留 Xray。只有确实需要删除保留数据时，才使用：
 

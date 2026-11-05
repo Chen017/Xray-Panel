@@ -163,7 +163,8 @@ apply_schema_migration() {
     fi
     file="$is_conf_dir/99_relay_in.json"
     if [[ -f "$file" ]]; then
-        json=$(jq '(.inbounds[]? | select(.tag == "relay-in")) |= del(.streamSettings.sockopt.tcpFastOpen)' "$file") || return 1
+        json=$(jq '(.inbounds[]? | select(.tag == "relay-in")) |= del(.streamSettings.sockopt.tcpFastOpen) |
+            (.inbounds[]? | select(.tag == "relay-entry-v4") | .settings.clients[]?) |= del(.flow)' "$file") || return 1
         atomic_json "$file" "$json" || return 1
     fi
     migrate_dual_stack_listeners || return 1
@@ -172,7 +173,7 @@ apply_schema_migration() {
     json=$(jq '.routing.domainStrategy = "IPOnDemand" | .routing.rules = ([{"type":"field","ip":["geoip:private"],"outboundTag":"block"}] +
         [(.routing.rules // [])[] | select((.outboundTag == "block" and .ip == ["geoip:private"]) | not)])' "$is_config_json") || return 1
     atomic_json "$is_config_json" "$json" || return 1
-    printf '%s\n' 3 > "${is_config_json%/*}/.schema-version"
+    printf '%s\n' 4 > "${is_config_json%/*}/.schema-version"
 }
 
 migrate_node_entrypoints() {
@@ -194,6 +195,6 @@ migrate_node_entrypoints() {
 }
 
 migrate_installation() {
-    [[ $(cat "$is_core_dir/.schema-version" 2>/dev/null) == 3 ]] && return 0
+    [[ $(cat "$is_core_dir/.schema-version" 2>/dev/null) == 4 ]] && return 0
     config_transaction apply_schema_migration
 }

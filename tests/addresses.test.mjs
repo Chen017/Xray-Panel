@@ -55,6 +55,7 @@ test('linked landing synchronizes and cleans NAT v4 entry parameters',()=>{
  const nodesWithEntry=[{id,ipv4:'8.8.8.8',applied:{files:{'relay.json':{role:'landing',listen_port:24443,external_port:34443,entry_listen_port:25555,entry_external_port:35555,entry_uuid,entry_encryption:'mlkem768x25519plus.random.0rtt.pad.key'}}}}];
  const r1=resolveLinkedAddresses(b,nodesWithEntry);
  assert.equal(r1.files['relay.json'].landings[0].entry_port,35555);
+ assert.equal(r1.files['relay.json'].landings[0].entry_address,'8.8.8.8');
  assert.equal(r1.files['relay.json'].landings[0].entry_uuid,entry_uuid);
  assert.equal(r1.files['relay.json'].landings[0].entry_encryption,'mlkem768x25519plus.random.0rtt.pad.key');
  const nodesWithoutEntry=[{id,ipv4:'8.8.8.8',applied:{files:{'relay.json':{role:'landing',listen_port:24443,external_port:34443,entry_listen_port:0}}}}];
@@ -62,6 +63,10 @@ test('linked landing synchronizes and cleans NAT v4 entry parameters',()=>{
  assert.equal(r2.files['relay.json'].landings[0].entry_port,undefined);
  assert.equal(r2.files['relay.json'].landings[0].entry_uuid,undefined);
  assert.equal(r2.files['relay.json'].landings[0].entry_encryption,undefined);
+ assert.equal(r2.files['relay.json'].landings[0].entry_address,undefined);
+ const via6=structuredClone(b);via6.files['relay.json'].landings[0].addressFamily='ipv6';nodesWithEntry[0].ipv6='2606:4700::1111';
+ const separated=resolveLinkedAddresses(via6,nodesWithEntry).files['relay.json'].landings[0];
+ assert.equal(separated.landing_ip,'2606:4700::1111');assert.equal(separated.entry_address,'8.8.8.8');
 });
 
 test('removing the last linked landing clears stale errors and unblocks device synchronization',async()=>{

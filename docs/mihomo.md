@@ -115,6 +115,12 @@ xhttp-opts:
 
 设置只影响所选设备，保存后手动刷新 provider 或等待订阅自动刷新即可；无需部署 Xray 或更新 Agent。改名和排序不会改变设置对应的节点。较大窗口可能改善吞吐，也可能增加内存和满载延迟，需要按链路实测。
 
+## NAT IPv4 与线路 IPv6 分路
+
+需要 [定制 Mihomo](https://github.com/Chen017/mihomo/releases/latest) 支持独立下行拨号与 Provider 内部前置代理引用。Panel 1.3.11 配置 NAT 上传时会在下载设置内显式导出 `dialer-proxy: ""`，使 IPv6 下载直连；反向分路则只对下载指定 NAT 入口。入口保持随机加密与零 RTT，关闭入口客户端 TFO。
+
+关联托管 NAT 的设备 UUID 需在两端部署成功后才发布。链式配置无法用单条 VLESS URI 完整表示，请直接使用加密 Provider / 完整 YAML。升级与验证步骤见 [分路修复记录](nat-entry-review-2026-11-05.md)。
+
 ## 更新与排错
 
 provider 默认每小时刷新，节点部署成功后下次拉取生效，也可手动刷新。控制中心故障时，已有 VPS 配置继续运行，客户端使用最后可用缓存；首次导入仍需服务可访问。

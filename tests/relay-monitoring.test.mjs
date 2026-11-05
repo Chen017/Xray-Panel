@@ -29,6 +29,19 @@ async function fixture(){
   return {system,monitoring,line,landing,link,round,sent,samples,tick:()=>at+=61000};
 }
 
+test('public NAT entries receive domestic checks only with the updated Agent and role changes retire old plans',async()=>{
+  const f=await fixture();try{
+    const node=f.system.store.get('node',f.landing.id);node.observed.files['relay.json'].entry_listen_port=25555;node.report.monitorProtocol=3;f.system.store.put('node',node.id,node);
+    assert.ok(f.monitoring.plan(node).targets.some(t=>t.kind==='overseas'));
+    assert.ok(f.monitoring.status().upgradeRequired.some(n=>n.id===node.id));
+    node.report.monitorProtocol=4;f.system.store.put('node',node.id,node);f.tick();const publicPlan=f.monitoring.plan(node);
+    assert.ok(publicPlan.targets.some(t=>t.kind==='connectivity'));assert.ok(publicPlan.targets.every(t=>t.kind!=='overseas'));
+    assert.ok(!f.monitoring.status().upgradeRequired.some(n=>n.id===node.id));
+    delete node.observed.files['relay.json'].entry_listen_port;f.system.store.put('node',node.id,node);
+    const privatePlan=f.monitoring.plan(node);assert.ok(privatePlan.targets.every(t=>t.kind!=='connectivity'));
+  }finally{await f.system.close();}
+});
+
 test('running topology produces both TCP directions, NAT ports and overseas-only landing plans without credentials',async()=>{
   const f=await fixture();try{
     const forward=f.monitoring.plan(f.line),reverse=f.monitoring.plan(f.landing);

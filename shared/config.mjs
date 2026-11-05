@@ -37,6 +37,7 @@ export const managedInbounds = file => (file.inbounds??[]).filter(i=>i.protocol=
 // Match Xray's empty SplitHTTP defaults without inventing tuned XMUX values.
 const xhttpSettings = value => value && typeof value==='object' && !Array.isArray(value) ? value : {};
 export function migrateNodeEntrypoints(bundle) {
+  for(const i of bundle.files['conf/99_relay_in.json']?.inbounds??[])if(i.tag==='relay-entry-v4')for(const c of i.settings?.clients??[])delete c.flow;
   for(const [name,file] of nodeFiles(bundle)) {
     const suffix=createHash('sha256').update(name).digest('hex').slice(0,16);
     const socket=`@xhttp_${suffix}`,tag=`local_xhttp_${suffix}`;
@@ -84,12 +85,16 @@ export function patchSettings(bundle,input) {
   return validateBundle(migrateNodeEntrypoints(b));
 }
 export const ruleSchema=z.object({type:z.literal('field'),domain:z.array(z.string().min(1)).optional(),ip:z.array(z.string().min(1)).optional(),outboundTag:z.enum(['direct','direct-v4','direct-v6','block'])}).refine(r=>!!r.domain?.length!==!!r.ip?.length,'每条规则仅填写 domain 或 ip');
-export const landingSchema=z.object({id:z.string().regex(/^\d{1,6}$/),name:z.string().min(1).max(80),landing_ip:hostSchema,landing_port:portSchema,transport_uuid:z.guid(),encryption:z.string().min(10).max(2000).refine(s=>s.startsWith('mlkem768x25519plus.')||s.startsWith('mlkem768x25519.')||s.startsWith('chacha20poly1305.')),client_uuid:z.guid(),nodeId:z.guid().optional(),addressFamily:z.enum(['ipv4','ipv6']).optional(),entry_port:portSchema.optional(),entry_uuid:z.guid().optional(),entry_encryption:z.string().min(10).max(2000).optional()});
-export const relaySchema=z.discriminatedUnion('role',[
+const optionalEntryPort=z.preprocess(v=>v===0||v===''?undefined:v,portSchema.optional());
+const optionalEntryUuid=z.preprocess(v=>v===''?undefined:v,z.guid().optional());
+const optionalEntryKey=z.preprocess(v=>v===''?undefined:v,z.string().min(10).max(2000).optional());
+const clearDisabledEntry = r => {if(r&&typeof r==='object'&&r.role==='landing'&&!r.entry_listen_port){r={...r};for(const key of ['entry_external_port','entry_uuid','entry_decryption','entry_encryption'])delete r[key];}return r;};
+export const landingSchema=z.object({id:z.string().regex(/^\d{1,6}$/),name:z.string().min(1).max(80),landing_ip:hostSchema,landing_port:portSchema,transport_uuid:z.guid(),encryption:z.string().min(10).max(2000).refine(s=>s.startsWith('mlkem768x25519plus.')||s.startsWith('mlkem768x25519.')||s.startsWith('chacha20poly1305.')),client_uuid:z.guid(),nodeId:z.guid().optional(),addressFamily:z.enum(['ipv4','ipv6']).optional(),entry_address:hostSchema.optional(),entry_port:optionalEntryPort,entry_uuid:optionalEntryUuid,entry_encryption:optionalEntryKey}).superRefine((l,ctx)=>{if(l.entry_port&&(!l.entry_uuid||!l.entry_encryption))ctx.addIssue({code:'custom',path:['entry_port'],message:'公开入口需要独立 UUID 和加密参数，请导入落地机完整中继链接'});});
+export const relaySchema=z.preprocess(clearDisabledEntry,z.discriminatedUnion('role',[
   z.object({role:z.literal('none')}),
   z.object({role:z.literal('line'),landings:z.array(landingSchema).min(1).max(32),failover:z.object({enabled:z.boolean(),interval:z.string().regex(/^[1-9]\d{0,4}s$/),order:z.array(z.string())})}),
-  z.object({role:z.literal('landing'),transport_uuid:z.guid(),decryption:z.string().min(10).max(2000),encryption:z.string().min(10).max(2000),listen_port:portSchema,external_port:portSchema,landing_ip:hostSchema,peer_ip:z.string().refine(s=>s===''||isIP(s)===4,'来源白名单必须是 IPv4'),entry_listen_port:z.number().int().min(0).max(65535).optional(),entry_external_port:portSchema.optional(),entry_uuid:z.guid().optional(),entry_decryption:z.string().min(10).max(2000).optional(),entry_encryption:z.string().min(10).max(2000).optional()})
-]);
+  z.object({role:z.literal('landing'),transport_uuid:z.guid(),decryption:z.string().min(10).max(2000),encryption:z.string().min(10).max(2000),listen_port:portSchema,external_port:portSchema,landing_ip:hostSchema,peer_ip:z.string().refine(s=>s===''||isIP(s)===4,'来源白名单必须是 IPv4'),entry_listen_port:z.number().int().min(0).max(65535).optional(),entry_external_port:optionalEntryPort,entry_uuid:optionalEntryUuid,entry_decryption:optionalEntryKey,entry_encryption:optionalEntryKey})
+]).superRefine((r,ctx)=>{if(r.role==='landing'&&r.entry_listen_port>0){if(!r.entry_uuid||!r.entry_decryption||!r.entry_encryption)ctx.addIssue({code:'custom',path:['entry_listen_port'],message:'启用公开入口前请生成独立 UUID 与匹配的加密参数'});if(r.entry_listen_port===r.listen_port)ctx.addIssue({code:'custom',path:['entry_listen_port'],message:'公开入口与互联监听端口不能相同'});if((r.entry_external_port??r.entry_listen_port)===r.external_port)ctx.addIssue({code:'custom',path:['entry_external_port'],message:'公开入口与互联公网端口不能相同'});}}));
 export function patchRouting(bundle,{customRules,relay}={}) {
   const b=clone(bundle),f=b.files,m=f['config.json'];
   if(customRules!==undefined)f['custom_rules.json']=z.array(ruleSchema).max(500).parse(customRules);
@@ -133,7 +138,19 @@ export function patchRouting(bundle,{customRules,relay}={}) {
 export function deviceUuid(master,device,nodeId,route) {
   const a=createHmac('sha256',master).update(`${device.id}:${device.epoch}:${nodeId}:${route}`).digest().subarray(0,16);a[6]=(a[6]&15)|0x40;a[8]=(a[8]&63)|0x80;const h=a.toString('hex');return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
 }
-export function compileDevices(base,node,devices,master) {
+export function natEntryClients(nodeId,nodes,devices,master){
+  const clients=[];
+  for(const source of nodes.filter(n=>n.enabled&&n.id!==nodeId)){
+    const relay=(source.observed??source.applied)?.files?.['relay.json'];
+    if(relay?.role!=='line')continue;
+    for(const landing of (relay.landings??[]).filter(l=>l.nodeId===nodeId&&l.entry_port>0))for(const d of devices.filter(d=>!d.revoked)){
+      const grant=d.grants.find(g=>g.nodeId===source.id);
+      if(grant?.routes.includes(landing.id)&&grant.modes.some(mode=>['split','single4','vision4'].includes(mode)))clients.push({id:deviceUuid(master,d,source.id,landing.id),email:`panel-relay-${source.id}-${d.id}-${landing.id}`});
+    }
+  }
+  return clients.sort((a,b)=>a.email.localeCompare(b.email));
+}
+export function compileDevices(base,node,devices,master,nodes=[]) {
   const b=migrateNodeEntrypoints(validateBundle(base)),m=b.files['config.json'];
   const deviceRules=[];
   m.routing??={rules:[]};m.routing.domainStrategy='IPOnDemand';m.routing.rules=(m.routing.rules??[]).filter(r=>!r.user?.some(u=>u.startsWith('panel-')));
@@ -148,6 +165,7 @@ export function compileDevices(base,node,devices,master) {
     if(route==='direct'&&landingEntryInbound)landingEntryInbound.settings.clients.push({id,email});
     if(l)deviceRules.push({type:'field',user:[email],...(b.files['relay.json'].failover?.enabled?{balancerTag:`relay-balancer-${route}`}:{outboundTag:`relay-out-${route}`})});
   }
+  if(landingEntryInbound)landingEntryInbound.settings.clients.push(...natEntryClients(node.id,nodes,devices,master));
   // This applies to imported legacy routing too, before any per-user or loopback rule.
   const rules=m.routing.rules.filter(r=>!(r.outboundTag==='block'&&r.ip?.length===1&&r.ip[0]==='geoip:private'));
   const loopRule=r=>r.balancerTag?.startsWith('relay-balancer-')&&r.inboundTag?.some(t=>t.startsWith('from-loop-relay-'));
@@ -166,12 +184,13 @@ function providerEntries(node,applied,device,master,sourceFile) {
     if(r?.role==='landing'&&r.entry_listen_port>0&&r.entry_encryption){
       const grant=device.grants.find(g=>g.nodeId===node.id);if(!grant||!grant.routes.includes('direct'))return [];
       const entryInbound=applied.files?.['conf/99_relay_in.json']?.inbounds?.find(i=>i.tag==='relay-entry-v4');
-      const uuid=entryInbound?.settings?.clients?.some(c=>c.email===`panel-${device.id}-direct`)?deviceUuid(master,device,node.id,'direct'):r.entry_uuid;
+      const uuid=deviceUuid(master,device,node.id,'direct');
+      if(!entryInbound?.settings?.clients?.some(c=>c.id===uuid&&c.email===`panel-${device.id}-direct`))return [];
       const server=node.ipv4||r.landing_ip;if(!server)return [];
       const port=r.entry_external_port||r.entry_listen_port;
       const key=subscriptionNameKey(node.id,'conf/99_relay_in.json','direct','vlessenc');
       const defaultName=`${node.subscriptionName||node.name} · NAT-v4-VLESS-Enc`,customName=node.subscriptionNames?.[key]??'';
-      const p={name:customName||defaultName,type:'vless',server,port,uuid,network:'tcp',tls:false,udp:true,tfo:true,mptcp:true,'packet-encoding':'xudp',encryption:(r.entry_encryption||'').replace(/=+$/,'')};
+      const p={name:customName||defaultName,type:'vless',server,port,uuid,network:'tcp',tls:false,udp:true,tfo:false,mptcp:true,'packet-encoding':'xudp',encryption:(r.entry_encryption||'').replace(/=+$/,'')};
       return [{proxy:p,settings:{xhttp:{}},key,nodeId:node.id,file:'conf/99_relay_in.json',route:'direct',mode:'vlessenc',defaultName,customName}];
     }
     return [];
@@ -187,29 +206,33 @@ function providerEntries(node,applied,device,master,sourceFile) {
     const transport=f=>({server:addr(f),port:s.port,tls:true,servername:sni(f),'client-fingerprint':f===family?'chrome':'firefox',alpn:['h2'],'reality-opts':{'public-key':s.publicKey,'short-id':sid(f)}});
     const landing=applied.files['relay.json']?.landings?.find(l=>l.id===route);
     const hasNatV4=!!(landing?.entry_port&&landing.entry_port>0&&landing.entry_encryption);
+    const entryTarget=hasNatV4&&landing.nodeId&&['split','single4','vision4'].includes(mode)?{nodeId:landing.nodeId,uuid}:null;
     const guardName=`${node.subscriptionName||node.name} · ${landing?.name??route} · NAT-v4-Entry`;
-    const guardProxy=hasNatV4?{name:guardName,type:'vless',server:landing.landing_ip,port:landing.entry_port,uuid:landing.entry_uuid||uuid,network:'tcp',tls:false,udp:true,tfo:true,mptcp:true,'packet-encoding':'xudp',encryption:(landing.entry_encryption||'').replace(/=+$/,'')}:null;
+    const guardProxy=hasNatV4?{name:guardName,type:'vless',server:landing.entry_address??landing.landing_ip,port:landing.entry_port,uuid:landing.nodeId?uuid:landing.entry_uuid||uuid,network:'tcp',tls:false,udp:true,tfo:false,mptcp:true,'packet-encoding':'xudp',encryption:(landing.entry_encryption||'').replace(/=+$/,'')}:null;
     const file=sourceFile??regular[0][0],key=subscriptionNameKey(node.id,file,route,mode),defaultName=`${node.subscriptionName||node.name} · ${route==='direct'?'直出':landing?.name??route} · ${mode}`,customName=node.subscriptionNames?.[key]??'';
 
     if(hasNatV4&&mode==='vision4'){
       const p={...guardProxy,name:customName||defaultName};
-      result.push({proxy:p,settings:s,key,nodeId:node.id,file,route,mode,defaultName,customName});
+      result.push({proxy:p,settings:s,key,nodeId:node.id,file,route,mode,defaultName,customName,entryTarget});
       continue;
     }
     const p={name:customName||defaultName,type:'vless',...transport(family),uuid,udp:true,tfo:true,mptcp:true,'packet-encoding':'xudp',encryption:'none'};
     if(mode.startsWith('vision')){p.network='tcp';p.flow='xtls-rprx-vision';}
     else {p.network='xhttp';p['xhttp-opts']={...mihomoXhttp(s.xhttp),host:s.xhttp.host||sni(family),path:s.path};if(split)p['xhttp-opts']['download-settings']={...transport(down),host:s.xhttp.host||sni(down),path:s.path,'reuse-settings':{'max-concurrency':'8-16','c-max-reuse-times':0,'h-max-request-times':'300-600','h-max-reusable-secs':'2400-3600','h-keep-alive-period':0}};}
     if(hasNatV4){
-      if(split&&!s.v6Uplink)p['dialer-proxy']=guardName;
+      if(split){
+        if(s.v6Uplink)p['xhttp-opts']['download-settings']['dialer-proxy']=guardName;
+        else{p['dialer-proxy']=guardName;p['xhttp-opts']['download-settings']['dialer-proxy']='';}
+      }
       else if(mode==='single4')p['dialer-proxy']=guardName;
-      if(p['dialer-proxy']&&!emittedGuards.has(guardName)){
+      if((p['dialer-proxy']||p['xhttp-opts']?.['download-settings']?.['dialer-proxy'])&&!emittedGuards.has(guardName)){
         emittedGuards.add(guardName);
-        result.push({proxy:guardProxy,settings:s,key:subscriptionNameKey(node.id,file,route,'nat4-entry'),nodeId:node.id,file,route,mode:'nat4-entry',defaultName:guardName,customName:''});
+        result.push({proxy:guardProxy,settings:s,key:subscriptionNameKey(node.id,file,route,'nat4-entry'),nodeId:node.id,file,route,mode:'nat4-entry',defaultName:guardName,customName:'',entryTarget});
       }
     }
     const window=device.downloadWindows?.[key];
     if(split&&Number.isInteger(window)&&window>0&&window<=H2_WINDOW_MAX)p['xhttp-opts']['download-settings']['h2-max-receive-buffer-per-stream']=window;
-    result.push({proxy:p,settings:s,key,nodeId:node.id,file,route,mode,defaultName,customName});
+    result.push({proxy:p,settings:s,key,nodeId:node.id,file,route,mode,defaultName,customName,entryTarget});
   }
   return result;
 }
@@ -217,20 +240,22 @@ export function providerProxies(node,applied,device,master) {
   return providerEntries(node,applied,device,master).map(({proxy})=>proxy);
 }
 export function providerNameEntries(node,applied,device,master) {
-  return providerEntries(node,applied,device,master).map(({proxy,settings,...entry})=>({...entry,name:proxy.name}));
+  return providerEntries(node,applied,device,master).map(({proxy,settings,entryTarget,...entry})=>({...entry,name:proxy.name}));
 }
 export function providerLinks(node,applied,device,master) {
   return providerEntries(node,applied,device,master).map(({proxy,settings})=>vlessLink(proxy,settings));
 }
 function deviceProviderEntries(nodes,device,master) {
   if(device.revoked)return [];
-  return nodes.filter(n=>n.enabled&&n.applied).flatMap(n=>providerEntries(n,n.applied,device,master)).map((entry,defaultIndex)=>({...entry,defaultIndex}));
+  const entries=new Map(nodes.filter(n=>n.enabled&&n.applied).map(n=>[n.id,new Set(n.applied.files?.['conf/99_relay_in.json']?.inbounds?.find(i=>i.tag==='relay-entry-v4')?.settings?.clients?.map(c=>c.id)??[])]));
+  return nodes.filter(n=>n.enabled&&n.applied).flatMap(n=>providerEntries(n,n.applied,device,master)).filter(({entryTarget})=>!entryTarget||entries.get(entryTarget.nodeId)?.has(entryTarget.uuid)).map((entry,defaultIndex)=>({...entry,defaultIndex}));
 }
 export function deviceProviderProxies(nodes,device,master){return deviceProviderEntries(nodes,device,master).map(({proxy})=>proxy);}
 export function deviceProviderLinks(nodes,device,master){return deviceProviderEntries(nodes,device,master).map(({proxy,settings})=>vlessLink(proxy,settings));}
-export function deviceProviderNameEntries(nodes,device,master){return deviceProviderEntries(nodes,device,master).map(({proxy,settings,...entry})=>({...entry,name:proxy.name}));}
+export function deviceProviderNameEntries(nodes,device,master){return deviceProviderEntries(nodes,device,master).map(({proxy,settings,entryTarget,...entry})=>({...entry,name:proxy.name}));}
 export function vlessLink(proxy,settings) {
   const p=proxy;
+  if(p['dialer-proxy']||p['xhttp-opts']?.['download-settings']?.['dialer-proxy'])throw Error('NAT 串联节点无法用单条 VLESS 链接完整表示，请使用 Mihomo Provider 或完整 YAML 配置');
   if(p.tls===false){
     const q=new URLSearchParams({encryption:p.encryption||'none',security:'none',type:'tcp'});
     if(p.flow)q.set('flow',p.flow);

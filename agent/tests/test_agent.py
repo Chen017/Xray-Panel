@@ -157,6 +157,16 @@ class AgentSafetyTests(unittest.TestCase):
             agent.once()
         check.assert_called_once_with(plan,landing=True)
 
+    def test_public_nat_entry_enables_domestic_probe_but_closed_entry_and_unknown_config_do_not(self):
+        plan={'id':'public','targets':[{'id':'network','kind':'connectivity'}]}
+        for port,private in [(25555,False),(0,True),(True,True)]:
+            bundle={**self.bundle,'files':{**self.bundle['files'],'relay.json':{'role':'landing','entry_listen_port':port}}}
+            module.write_bundle(self.root,bundle)
+            agent=self.make_agent()
+            with patch.object(agent,'request',return_value={'monitorPlan':plan}), patch.object(module.probes,'run_plan',return_value=None) as check:
+                agent.once()
+            check.assert_called_once_with(plan,landing=private)
+
     @unittest.skipIf(__import__('os').name == 'nt', 'Symlink creation requires Linux permissions')
     def test_symlink_rejected(self):
         target = self.root / 'outside.json'

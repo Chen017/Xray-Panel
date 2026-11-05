@@ -7,7 +7,7 @@ function NodeIdentity({node}:{node:RecordData}){
   const role=node.draft?.files?.['relay.json']?.role;
   return <Group gap="sm" wrap="nowrap" className="node-identity">
     <ThemeIcon variant="light" color="gray" radius="md" size={38}><IconServer size={19}/></ThemeIcon>
-    <Box miw={0}><Text fw={600} size="sm" className="node-name">{node.name}</Text><Text c="dimmed" size="xs">{role==='line'?'线路机':role==='landing'?'落地机':'独立节点'}</Text></Box>
+    <Box miw={0}><Text fw={600} size="sm" className="node-name">{node.name}</Text><Text c="dimmed" size="xs">{role==='line'?'线路机':role==='landing'?(node.draft?.files?.['relay.json']?.entry_listen_port>0?'落地机 · 公开 IPv4 入口':'落地机'):'独立节点'}</Text></Box>
   </Group>;
 }
 function NodeAddressSummary({node}:{node:RecordData}){

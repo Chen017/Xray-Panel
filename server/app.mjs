@@ -14,7 +14,7 @@ import {nodeNameEntries,assertUniqueNames,migrateSubscriptionNames} from './subs
 import {createMonitoring} from './monitoring.mjs';
 import { Store,token,digest,passwordHash,passwordVerify } from './store.mjs';
 import {addressPolicy,effectiveAddress,observeAddresses,resolveLinkedAddresses,linkedTargetHash} from '../shared/addresses.mjs';
-import { validateBundle,hashBundle,compileDevices,deviceProviderProxies,deviceProviderLinks,deviceProviderNameEntries,readSettings,patchSettings,patchRouting,keypair,hostSchema,newBundle,settingsSchema,clone } from '../shared/config.mjs';
+import { validateBundle,hashBundle,compileDevices,natEntryClients,deviceProviderProxies,deviceProviderLinks,deviceProviderNameEntries,readSettings,patchSettings,patchRouting,keypair,hostSchema,newBundle,settingsSchema,clone } from '../shared/config.mjs';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const version=JSON.parse(readFileSync(path.join(root,'package.json'),'utf8')).version;
@@ -51,7 +51,8 @@ export function createSystem(config) {
   const nodeOrderPresentation=()=>{const nodes=orderedNodes();return {revision:store.get('system','node-order')?.revision??0,order:nodes.map(n=>n.id),defaultOrder:orderNodes(nodes).map(n=>n.id),nodes:nodes.map(({id,name,enabled})=>({id,name,enabled}))};};
   const busy=id=>store.list('job').find(j=>j.nodeId===id&&['queued','running'].includes(j.status));
   const canAbandon=j=>j.status==='running'&&Number.isFinite(j.leaseUntil)&&j.leaseUntil<=Date.now();
-  const publicNode=n=>{const {agentHash,...safe}=n;let hasDraftChanges=false,settings=null;try{settings=n.draft?readSettings(n.draft):null;hasDraftChanges=!!n.draft&&!!n.applied&&hashBundle(compileDevices(resolveLinkedAddresses(n.draft,store.list('node')),n,store.list('device'),config.masterKey))!==hashBundle(n.applied);}catch{hasDraftChanges=true;}return {...safe,addressPolicy:addressPolicy(n),settings,hasDraftChanges,online:!!n.lastSeen&&Date.now()-Date.parse(n.lastSeen)<45000};};
+  const compileNodeBundle=(base,n,nodes=store.list('node'),devices=store.list('device'))=>compileDevices(resolveLinkedAddresses(base,nodes),n,devices,config.masterKey,nodes);
+  const publicNode=(n,nodes,devices)=>{const {agentHash,...safe}=n;let hasDraftChanges=false,settings=null;try{settings=n.draft?readSettings(n.draft):null;hasDraftChanges=!!n.draft&&!!n.applied&&hashBundle(compileNodeBundle(n.draft,n,nodes,devices))!==hashBundle(n.applied);}catch{hasDraftChanges=true;}return {...safe,addressPolicy:addressPolicy(n),settings,hasDraftChanges,online:!!n.lastSeen&&Date.now()-Date.parse(n.lastSeen)<45000};};
   const publicDevice=d=>{const {tokenHash,...safe}=d;return safe;};
   function queue(n,action,payload={},source='admin') {
     if(busy(n.id))throw error('该节点有未完成任务，请等待或取消待执行任务',409);
@@ -61,13 +62,26 @@ export function createSystem(config) {
     if(!n.observedHash)throw error('请先连接 Agent 并同步当前配置',409);
     if(n.report?.configError)throw error('VPS 配置无法读取，请先检查配置错误；仍可读取日志和执行诊断',409);
     if(source==='admin'&&n.draftBaseHash&&n.draftBaseHash!==n.observedHash)throw error('VPS 配置已在面板之外变化，请先导入 VPS 当前配置',409);
-    const bundle=compileDevices(resolveLinkedAddresses(base,store.list('node')),n,store.list('device'),config.masterKey);
+    const bundle=compileNodeBundle(base,n);
     return queue(n,'deploy',{bundle,expectedHash:n.observedHash,targetHash:hashBundle(bundle),syncRevision:n.syncRevision??0,relayRevision:n.relayRevision??0},source);
   }
-  function markSync(nodeIds){for(const id of new Set(nodeIds)){const n=store.get('node',id);if(n){n.needsSync=true;n.syncRevision=(n.syncRevision??0)+1;delete n.syncRetryAt;delete n.syncFailures;store.put('node',id,n);}}}
+  function markNodeSync(n){n.needsSync=true;n.syncRevision=(n.syncRevision??0)+1;delete n.syncRetryAt;delete n.syncFailures;}
+  function markSync(nodeIds){
+    const ids=new Set(nodeIds);
+    for(const id of nodeIds){const n=store.get('node',id);for(const base of [n?.observed,n?.applied,n?.draft])for(const l of base?.files?.['relay.json']?.landings??[])if(l.nodeId&&l.entry_port>0)ids.add(l.nodeId);}
+    for(const id of ids){const n=store.get('node',id);if(n){markNodeSync(n);store.put('node',id,n);}}
+  }
   function retrySync(n){if(n.needsSync||n.needsRelaySync){n.syncFailures=(n.syncFailures??0)+1;n.syncRetryAt=Date.now()+Math.min(300000,5000*2**Math.min(n.syncFailures-1,6));}}
   function refreshLinks(){
-    const nodes=store.list('node');
+    const nodes=store.list('node'),devices=store.list('device');
+    for(const n of nodes){
+      const inbound=n.observed?.files?.['conf/99_relay_in.json']?.inbounds?.find(i=>i.tag==='relay-entry-v4');
+      if(!inbound)continue;
+      const desired=hashBundle(natEntryClients(n.id,nodes,devices,config.masterKey)),current=hashBundle((inbound.settings?.clients??[]).filter(c=>c.email?.startsWith('panel-relay-')).sort((a,b)=>a.email.localeCompare(b.email)));
+      const changed=desired!==n.natClientsHash,needsSync=desired!==current&&(changed||!n.needsSync);
+      if(needsSync)markNodeSync(n);
+      if(changed||needsSync){n.natClientsHash=desired;store.put('node',n.id,n);}
+    }
     for(const n of nodes){
       if(!n.observed?.files['relay.json']?.landings?.some(l=>l.nodeId)){
         // A successful unlink (or an externally changed configuration) must not
@@ -108,7 +122,7 @@ export function createSystem(config) {
   admin.get('/api/monitoring',(_,res)=>res.json(monitoring.status()));
   admin.put('/api/monitoring',(req,res)=>{try{res.json(monitoring.save(req.body));}catch(e){if(e instanceof z.ZodError)throw e;throw error(e.message);}});
   admin.post('/api/monitoring/test',async(req,res)=>{try{res.json(await monitoring.test());}catch(e){throw error(e.message);}});
-  admin.get('/api/nodes',(_,res)=>res.json(orderedNodes().map(publicNode)));
+  admin.get('/api/nodes',(_,res)=>{const nodes=orderedNodes(),devices=store.list('device');res.json(nodes.map(n=>publicNode(n,nodes,devices)));});
   admin.get('/api/node-order',(_,res)=>res.json(nodeOrderPresentation()));
   admin.put('/api/node-order',(req,res)=>{
     const input=nodeOrderSchema.parse(req.body);
@@ -132,10 +146,10 @@ export function createSystem(config) {
     else if(input.settings)b=patchSettings(b,input.settings);
     if(!b)throw error('等待 Agent 导入配置');
     if(input.customRules!==undefined||input.relay!==undefined)b=patchRouting(b,input);
-    if(input.firewall){const r=b.files['relay.json'];if(r?.role==='landing'&&[...input.firewall.open,...input.firewall.closed].includes(r.listen_port))throw error('落地中继端口由互联配置管理，请在互联页调整或移除');b.files['firewall_ports.json']=input.firewall;}
+    if(input.firewall){const r=b.files['relay.json'];if(r?.role==='landing'&&[...input.firewall.open,...input.firewall.closed].some(p=>p===r.listen_port||p===r.entry_listen_port))throw error('落地互联和公开入口端口由互联配置管理，请在互联页调整或移除');b.files['firewall_ports.json']=input.firewall;}
     n.draft=validateBundle(b);n.revision++;store.put('node',n.id,n);store.audit('config.saved',n.id,`revision ${n.revision}`);res.json(publicNode(n));});
   admin.post('/api/nodes/:id/adopt',(req,res)=>{const n=getNode(req.params.id);if(busy(n.id))throw error('任务执行期间不能导入',409);if(!n.observed)throw error('Agent 尚未导入配置');n.draft=clone(n.observed);n.draftBaseHash=n.observedHash;n.revision++;store.put('node',n.id,n);store.audit('config.imported',n.id);res.json(publicNode(n));});
-  admin.get('/api/nodes/:id/preview',(req,res)=>{const n=getNode(req.params.id);if(!n.draft)throw error('请先导入配置');const b=compileDevices(resolveLinkedAddresses(n.draft,store.list('node')),n,store.list('device'),config.masterKey);res.json({bundle:b,hash:hashBundle(b),observedHash:n.observedHash,revision:n.revision});});
+  admin.get('/api/nodes/:id/preview',(req,res)=>{const n=getNode(req.params.id);if(!n.draft)throw error('请先导入配置');const b=compileNodeBundle(n.draft,n);res.json({bundle:b,hash:hashBundle(b),observedHash:n.observedHash,revision:n.revision});});
   admin.post('/api/nodes/:id/deploy',(req,res)=>{const n=getNode(req.params.id);if(req.body.revision!==n.revision)throw error('配置版本已变化，请重新预览',409);if(!n.draft)throw error('没有配置草稿');res.status(202).json(deploy(n,n.draft));});
   admin.post('/api/nodes/:id/actions',(req,res)=>{const n=getNode(req.params.id),action=actionSchema.parse(req.body.action);if(['uninstall','install-standard','install-landing'].includes(action)&&req.body.confirm!==n.name)throw error('请输入节点名称确认此操作');if(['detect-addresses','firewall-status'].includes(action)&&!n.report?.network)throw error('请先使用 xray-panel agent update 更新该 VPS 的 Agent',409);res.status(202).json(queue(n,action));});
   admin.post('/api/batch',(req,res)=>{const b=z.object({nodeIds:z.array(idSchema).min(1).max(100),action:z.enum(['deploy','inspect','validate','start','stop','restart','update-geodata'])}).parse(req.body);const results=b.nodeIds.map(id=>{try{const n=getNode(id);return{id,job:b.action==='deploy'?deploy(n,n.draft):queue(n,b.action)};}catch(e){return{id,error:e.message};}});res.json(results);});

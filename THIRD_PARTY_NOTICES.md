@@ -21,6 +21,7 @@
 - Script v2.7.11 adds the shared read-only network_probe.sh module and domestic/Cloudflare menu status, mirrored from the original Script workspace. Panel Agent reuses this same module for network notifications; it does not deploy or modify Xray configuration.
 - Script v2.7.12 resolves the latest published Panel Release before downloading the manager bootstrap, avoiding stale release asset URLs after old releases are removed. The Agent entry and version marker are mirrored from the Script workspace.
 - Script v2.7.13 mirrors private-route refusal, firewall rollback cache invalidation, unique XHTTP entrypoints, schema migration v3 and scoped diagnostic cleanup. The Panel-specific unattended installer branch remains in place. Configuration compilation also keeps failover loopback routes ahead of per-device selection rules.
+- Script v2.7.16 mirrors NAT public-entry migration v4, independent download dialer exports, separate entry credentials, shared export helpers and public-entry menu monitoring. Inter-server Vision and public-entry zero RTT remain enabled.
 - The supplied Xray repository has no standalone LICENSE file; its source is included as user-provided project code with attribution. Review its licensing before separately redistributing it outside your own project.
 
 ## Dependencies

@@ -132,6 +132,7 @@ relay_apply_landing() {
             _fail "NAT v4 过墙监听端口不能与落地中继监听端口 ($port) 相同"
             return 1
         }
+        (( entry_ext_port != ext_port )) || { _fail "公开入口与互联公网映射端口不能相同"; return 1; }
         if [[ -z "$entry_uuid" ]] || ! relay_validate_uuid "$entry_uuid"; then
             get_uuid
             entry_uuid="$tmp_uuid"
@@ -176,6 +177,9 @@ relay_apply_line() {
     if (( entry_port == 0 )); then
         entry_uuid=""
         entry_enc=""
+    elif ! relay_validate_uuid "$entry_uuid" || ! relay_validate_vless_encryption "$entry_enc"; then
+        _fail "公开入口需要独立 UUID 和加密参数，请导入落地机完整中继链接"
+        return 1
     fi
     local landings='[]'
     local existing_failover='{"enabled":false,"interval":"60s","order":[]}'
@@ -237,11 +241,15 @@ relay_apply_line_entry_port() {
         return 1
     fi
     if (( entry_port > 0 )); then
-        if [[ -n "$entry_uuid" ]] && ! relay_validate_uuid "$entry_uuid"; then
+        if [[ -z "$entry_uuid" || -z "$entry_enc" ]]; then
+            _fail "公开入口需要独立 UUID 和加密参数，请粘贴落地机导出的完整中继链接"
+            return 1
+        fi
+        if ! relay_validate_uuid "$entry_uuid"; then
             _fail "无效的过墙 UUID"
             return 1
         fi
-        if [[ -n "$entry_enc" ]] && ! relay_validate_vless_encryption "$entry_enc"; then
+        if ! relay_validate_vless_encryption "$entry_enc"; then
             _fail "无效的 VLESS Encryption 密钥参数"
             return 1
         fi
@@ -434,7 +442,7 @@ relay_configure_landing_entry() {
     echo
     _section "NAT v4 方案一过墙入口设置 (VLESS Encryption)"
     _info "香港线路机与本 NAT 机器之间保持原有的 VLESS Encryption 互联方式不变；"
-    _info "客户端通过 NAT v4 高位端口过墙时，采用方案一 (VLESS + Vision + VLESS Encryption"
+    _info "客户端通过 NAT v4 高位端口过墙时，采用方案一 (VLESS + VLESS Encryption"
     _info "random 全随机流 + 100-111-1111.75-0-111.50-0-3333 握手填充)，彻底消除高位端口假 TLS 特征。"
     echo
     if (( cur_elport > 0 )); then
@@ -564,11 +572,9 @@ relay_menu_entry_port() {
         return 0
     elif relay_validate_port "$input_val"; then
         local new_eport="$input_val" new_euuid="$cur_euuid" new_eenc="$cur_eenc"
-        if [[ -z "$new_euuid" ]]; then
-            new_euuid=$(jq -r ".[$sel_idx].client_uuid // empty" <<< "$landings")
-        fi
-        if [[ -z "$new_eenc" ]]; then
-            new_eenc=$(jq -r ".[$sel_idx].encryption // empty" <<< "$landings")
+        if [[ -z "$new_euuid" || -z "$new_eenc" ]]; then
+            _fail "尚未导入公开入口密钥，不能复用互联密钥；请粘贴落地机完整中继链接"
+            return 1
         fi
         if config_transaction relay_apply_line_entry_port "$sel_id" "$new_eport" "$new_euuid" "$new_eenc"; then
             _ok "已设置 [${sel_name}] NAT v4 过墙端口为 ${sel_ip}:${new_eport}"

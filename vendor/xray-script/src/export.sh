@@ -3,6 +3,24 @@
 # JSON string syntax is also a quoted YAML scalar, preserving IDs and aliases.
 yaml_string() { jq -cn --arg value "$1" '$value'; }
 
+export_nat_guard_yaml() {
+    local name="$1" host="$2" entry_port="$3" entry_uuid="$4" entry_enc="$5"
+    cat <<EOF
+- name: $(yaml_string "$name")
+  type: vless
+  server: $(yaml_string "$host")
+  port: $entry_port
+  uuid: $entry_uuid
+  network: tcp
+  tls: false
+  udp: true
+  tfo: false
+  mptcp: true
+  packet-encoding: xudp
+  encryption: $(yaml_string "$entry_enc")
+EOF
+}
+
 export_landing_vlessenc() {
     if [[ ! -f "$is_relay_state_file" ]] || [[ "$(relay_get_role)" != "landing" ]]; then
         _fail "当前非落地机模式"
@@ -25,23 +43,9 @@ export_landing_vlessenc() {
     local node_tag
     node_tag=$(printf "%s" "NAT-v4-VLESS-Enc" | jq -Rr @uri)
     if [[ $is_output_format == "Mihomo配置" ]]; then
-        cat <<EOF
-- name: $(yaml_string "$node_name")
-  type: vless
-  server: "$lip"
-  port: $eext
-  uuid: $euuid
-  network: tcp
-  tls: false
-  udp: true
-  tfo: true
-  mptcp: true
-  packet-encoding: xudp
-  flow: xtls-rprx-vision
-  encryption: $(yaml_string "$eenc")
-EOF
+        export_nat_guard_yaml "$node_name" "$lip" "$eext" "$euuid" "$eenc"
     else
-        local vless_link="vless://${euuid}@${lip}:${eext}?encryption=${eenc}&security=none&flow=xtls-rprx-vision&type=tcp#${node_tag}"
+        local vless_link="vless://${euuid}@${lip}:${eext}?encryption=${eenc}&security=none&type=tcp#${node_tag}"
         echo
         _step "VLESS 分享链接 (NAT v4 方案一 VLESS Encryption 过墙):"
         echo
@@ -118,9 +122,9 @@ info() {
         has_nat_v4_plan1=1
         v4_entry_ip="$selected_landing_ip"
         v4_entry_port="$selected_entry_port"
-        [[ -n "$selected_entry_uuid" ]] || selected_entry_uuid="$active_uuid"
-        if [[ -z "$selected_entry_enc" ]]; then
-            selected_entry_enc=$(jq -r '.landings[]? | select(.landing_ip == "'"$selected_landing_ip"'") | .encryption // empty' "$is_relay_state_file" 2>/dev/null | head -1)
+        if [[ -z "$selected_entry_uuid" || -z "$selected_entry_enc" ]]; then
+            _fail "公开入口缺少独立密钥，请重新导入落地机完整中继链接"
+            return 1
         fi
         selected_entry_enc="${selected_entry_enc%%=*}"
         _info "已启用 NAT v4 方案一过墙 (VLESS Encryption): NAT v4 走 [${selected_landing_name}] (${v4_entry_ip}:${v4_entry_port})，v6 走本机 (${v6_ip:-$is_addr}:${port})，双机维持原有互联落地"
@@ -203,6 +207,10 @@ info() {
     echo
     ask list is_output_format "Mihomo配置 VLESS链接" "\n  请选择输出格式:"
     [[ $REPLY == "0" ]] && return
+    if (( has_nat_v4_plan1 )) && [[ $is_output_format == "VLESS链接" ]] && { [[ $is_deploy_mode == "XHTTP双栈分离" ]] || [[ $is_deploy_mode == "XHTTP单栈" && $is_v4_choice == 1 ]]; }; then
+        _fail "单条 VLESS 链接无法保存 NAT 串联，请选择完整 Mihomo 配置并使用支持独立下行拨号的个人构建"
+        return 1
+    fi
 
     local suffix="Landing"
     [[ -z "$selected_landing_name" || "$selected_landing_name" == "默认落地" ]] || suffix="Landing-${selected_landing_name}"
@@ -218,10 +226,16 @@ info() {
         fi
 
         if [[ $is_output_format == "Mihomo配置" ]]; then
+            local split_top_dialer="" split_download_dialer=""
             if (( has_nat_v4_plan1 )); then
-                local split_top_dialer=""
-                [[ -z "$is_v6_uplink" ]] && split_top_dialer="  dialer-proxy: $(yaml_string "$nat_guard_name")"$'\n'
-                cat <<EOF
+                if [[ -z "$is_v6_uplink" ]]; then
+                    split_top_dialer="  dialer-proxy: $(yaml_string "$nat_guard_name")"$'\n'
+                    split_download_dialer='      dialer-proxy: ""'$'\n'
+                else
+                    split_download_dialer="      dialer-proxy: $(yaml_string "$nat_guard_name")"$'\n'
+                fi
+            fi
+            cat <<EOF
 - name: $(yaml_string "$split_name")
   type: vless
   server: "$uplink_ip"
@@ -262,81 +276,7 @@ ${split_top_dialer}  reality-opts:
       h-max-reusable-secs: "1800-3000"
       h-keep-alive-period: 0
     download-settings:
-      server: "$downlink_ip"
-      port: $downlink_port
-      tls: true
-      alpn:
-        - h2
-      servername: $downlink_sni
-      client-fingerprint: firefox
-      reality-opts:
-        public-key: $is_public_key
-        short-id: $(yaml_string "$downlink_sid")
-      host: $downlink_sni
-      path: $v4_path
-      reuse-settings:
-        max-concurrency: "8-16"
-        c-max-reuse-times: 0
-        h-max-request-times: "300-600"
-        h-max-reusable-secs: "2400-3600"
-        h-keep-alive-period: 0
-- name: $(yaml_string "$nat_guard_name")
-  type: vless
-  server: "$v4_entry_ip"
-  port: $v4_entry_port
-  uuid: $selected_entry_uuid
-  network: tcp
-  tls: false
-  udp: true
-  tfo: true
-  mptcp: true
-  packet-encoding: xudp
-  flow: xtls-rprx-vision
-  encryption: $(yaml_string "$selected_entry_enc")
-EOF
-            else
-                cat <<EOF
-- name: $(yaml_string "$split_name")
-  type: vless
-  server: "$uplink_ip"
-  port: $uplink_port
-  uuid: $active_uuid
-  network: xhttp
-  tls: true
-  udp: true
-  tfo: true
-  mptcp: true
-  packet-encoding: xudp
-  encryption: none
-  servername: $uplink_sni
-  client-fingerprint: chrome
-  alpn:
-    - h2
-  reality-opts:
-    public-key: $is_public_key
-    short-id: $(yaml_string "$uplink_sid")
-  xhttp-opts:
-    mode: stream-up
-    host: $uplink_sni
-    path: $v4_path
-    uplink-http-method: PUT
-    no-grpc-header: true
-    x-padding-bytes: "100-1000"
-    x-padding-obfs-mode: true
-    x-padding-placement: queryInHeader
-    x-padding-method: tokenish
-    x-padding-key: x_padding
-    x-padding-header: Referer
-    session-placement: path
-    seq-placement: path
-    reuse-settings:
-      max-concurrency: "16-32"
-      c-max-reuse-times: 0
-      h-max-request-times: "600-900"
-      h-max-reusable-secs: "1800-3000"
-      h-keep-alive-period: 0
-    download-settings:
-      server: "$downlink_ip"
+${split_download_dialer}      server: "$downlink_ip"
       port: $downlink_port
       tls: true
       alpn:
@@ -355,6 +295,8 @@ EOF
         h-max-reusable-secs: "2400-3600"
         h-keep-alive-period: 0
 EOF
+            if (( has_nat_v4_plan1 )); then
+                export_nat_guard_yaml "$nat_guard_name" "$v4_entry_ip" "$v4_entry_port" "$selected_entry_uuid" "$selected_entry_enc"
             fi
         else
             # generate XHTTP Split VLESS link
@@ -370,14 +312,7 @@ EOF
             _step "VLESS 分享链接 (XHTTP 分离):"
             echo
             printf '%s\n' "$vless_link_split"
-            if (( has_nat_v4_plan1 )); then
-                local nat_tag=$(printf "%s" "$nat_guard_name" | jq -Rr @uri)
-                local nat_vless_link="vless://${selected_entry_uuid}@${v4_entry_ip}:${v4_entry_port}?encryption=${selected_entry_enc}&security=none&flow=xtls-rprx-vision&type=tcp#${nat_tag}"
-                echo
-                _step "NAT v4 方案一过墙分享链接 (VLESS Encryption):"
-                echo
-                printf '%s\n' "$nat_vless_link"
-            fi
+
         fi
     elif [[ $is_deploy_mode == "XHTTP单栈" ]]; then
         # ── XHTTP single mode ──
@@ -389,8 +324,11 @@ EOF
         fi
 
         if [[ $is_output_format == "Mihomo配置" ]]; then
+            local single_dialer=""
             if (( has_nat_v4_plan1 && is_v4_choice )); then
-                cat <<EOF
+                single_dialer="  dialer-proxy: $(yaml_string "$nat_guard_name")"$'\n'
+            fi
+            cat <<EOF
 - name: $(yaml_string "$single_name")
   type: vless
   server: "$single_ip"
@@ -407,63 +345,7 @@ EOF
   client-fingerprint: chrome
   alpn:
     - h2
-  dialer-proxy: $(yaml_string "$nat_guard_name")
-  reality-opts:
-    public-key: $is_public_key
-    short-id: $(yaml_string "$single_sid")
-  xhttp-opts:
-    mode: stream-up
-    host: $single_sni
-    path: $v4_path
-    uplink-http-method: PUT
-    no-grpc-header: true
-    x-padding-bytes: "100-1000"
-    x-padding-obfs-mode: true
-    x-padding-placement: queryInHeader
-    x-padding-method: tokenish
-    x-padding-key: x_padding
-    x-padding-header: Referer
-    session-placement: path
-    seq-placement: path
-    reuse-settings:
-      max-concurrency: "16-32"
-      c-max-reuse-times: 0
-      h-max-request-times: "600-900"
-      h-max-reusable-secs: "1800-3000"
-      h-keep-alive-period: 0
-- name: $(yaml_string "$nat_guard_name")
-  type: vless
-  server: "$v4_entry_ip"
-  port: $v4_entry_port
-  uuid: $selected_entry_uuid
-  network: tcp
-  tls: false
-  udp: true
-  tfo: true
-  mptcp: true
-  packet-encoding: xudp
-  flow: xtls-rprx-vision
-  encryption: $(yaml_string "$selected_entry_enc")
-EOF
-            else
-                cat <<EOF
-- name: $(yaml_string "$single_name")
-  type: vless
-  server: "$single_ip"
-  port: $single_port
-  uuid: $active_uuid
-  network: xhttp
-  tls: true
-  udp: true
-  tfo: true
-  mptcp: true
-  packet-encoding: xudp
-  encryption: none
-  servername: $single_sni
-  client-fingerprint: chrome
-  alpn:
-    - h2
-  reality-opts:
+${single_dialer}  reality-opts:
     public-key: $is_public_key
     short-id: $(yaml_string "$single_sid")
   xhttp-opts:
@@ -487,6 +369,8 @@ EOF
       h-max-reusable-secs: "1800-3000"
       h-keep-alive-period: 0
 EOF
+            if (( has_nat_v4_plan1 && is_v4_choice )); then
+                export_nat_guard_yaml "$nat_guard_name" "$v4_entry_ip" "$v4_entry_port" "$selected_entry_uuid" "$selected_entry_enc"
             fi
         else
             # generate XHTTP Single VLESS link
@@ -502,14 +386,7 @@ EOF
             _step "VLESS 分享链接 (XHTTP 单栈):"
             echo
             printf '%s\n' "$vless_link_single"
-            if (( has_nat_v4_plan1 && is_v4_choice )); then
-                local nat_tag=$(printf "%s" "$nat_guard_name" | jq -Rr @uri)
-                local nat_vless_link="vless://${selected_entry_uuid}@${v4_entry_ip}:${v4_entry_port}?encryption=${selected_entry_enc}&security=none&flow=xtls-rprx-vision&type=tcp#${nat_tag}"
-                echo
-                _step "NAT v4 方案一过墙分享链接 (VLESS Encryption):"
-                echo
-                printf '%s\n' "$nat_vless_link"
-            fi
+
         fi
     else
         # ── Vision Reality / NAT-v4 Plan 1 mode ──
@@ -523,24 +400,10 @@ EOF
         if (( has_nat_v4_plan1 && is_v4_choice )); then
             # Direct Plan 1 (VLESS Encryption) over NAT v4 high port
             if [[ $is_output_format == "Mihomo配置" ]]; then
-                cat <<EOF
-- name: $(yaml_string "$nat_guard_name")
-  type: vless
-  server: "$v4_entry_ip"
-  port: $v4_entry_port
-  uuid: $selected_entry_uuid
-  network: tcp
-  tls: false
-  udp: true
-  tfo: true
-  mptcp: true
-  packet-encoding: xudp
-  flow: xtls-rprx-vision
-  encryption: $(yaml_string "$selected_entry_enc")
-EOF
+                export_nat_guard_yaml "$nat_guard_name" "$v4_entry_ip" "$v4_entry_port" "$selected_entry_uuid" "$selected_entry_enc"
             else
                 local nat_tag=$(printf "%s" "$vision_tag" | jq -Rr @uri)
-                local vless_link="vless://${selected_entry_uuid}@${v4_entry_ip}:${v4_entry_port}?encryption=${selected_entry_enc}&security=none&flow=xtls-rprx-vision&type=tcp#${nat_tag}"
+                local vless_link="vless://${selected_entry_uuid}@${v4_entry_ip}:${v4_entry_port}?encryption=${selected_entry_enc}&security=none&type=tcp#${nat_tag}"
                 echo
                 _step "VLESS 分享链接 (NAT v4 方案一 VLESS Encryption 过墙):"
                 echo
@@ -548,7 +411,7 @@ EOF
             fi
         else
             if [[ $is_output_format == "Mihomo配置" ]]; then
-                cat <<EOF
+            cat <<EOF
 - name: $(yaml_string "$vision_name")
   type: vless
   server: "$vision_ip"

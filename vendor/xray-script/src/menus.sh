@@ -220,13 +220,16 @@ is_main_menu() {
             tuuid=$(jq -r '.inbounds[0].settings.clients[0].id // ""' "$is_conf_dir/99_relay_in.json" 2>/dev/null)
             l_ext=$(jq -r '.external_port // .listen_port // ""' "$is_relay_state_file" 2>/dev/null)
             [[ -z "$l_ext" ]] && l_ext="$l_port"
-            echo -e "  ${cyan}[模式]${none} ${green}纯落地机模式 (Relay Landing)${none}   ${cyan}出站: ${green}$_ov_outbound_pref${none}   ${cyan}日志: ${green}$_ov_log_level${none}"
+            echo -e "  ${cyan}[模式]${none} ${green}落地机模式 (Relay Landing)${none}   ${cyan}出站: ${green}$_ov_outbound_pref${none}   ${cyan}日志: ${green}$_ov_log_level${none}"
             if [[ "$l_ext" != "$l_port" ]]; then
                 echo -e "  ${cyan}[监听]${none} 端口: ${green}$l_port${none} (公网外网: ${green}$l_ext${none})"
             else
                 echo -e "  ${cyan}[监听]${none} 端口: ${green}$l_port${none}"
             fi
             echo -e "  ${cyan}[UUID]${none} ${green}$tuuid${none}"
+            if [[ $(jq -r ' .entry_listen_port // 0' "$is_relay_state_file") -gt 0 ]]; then
+                echo -e "  ${cyan}[网络]${none} 国内连通: $_ov_ip_blocked   Cloudflare: $_ov_global_status"
+            fi
             echo -e "  ${cyan}[状态]${none} 防火墙: ${green}$_ov_fw_ports${none}   占用: ${green}$_ov_sys_ports${none}"
             [[ -z $_ov_relay_status ]] || echo -e "  $_ov_relay_status"
         else

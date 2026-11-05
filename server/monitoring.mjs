@@ -1,7 +1,7 @@
 import {randomUUID,createHash} from 'node:crypto';
 import {z} from 'zod';
 import {readSettings} from '../shared/config.mjs';
-import {isLanding,relayTargets} from './relay-monitoring.mjs';
+import {isLanding,isPrivateLanding,hasPublicEntry,relayTargets} from './relay-monitoring.mjs';
 const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export const monitoringSchema=z.object({enabled:z.boolean(),botToken:z.string().regex(/^\d{5,20}:[A-Za-z0-9_-]{20,100}$/).optional(),clearToken:z.boolean().optional(),chatId:z.string().regex(/^-?\d{1,20}$/).or(z.literal('')),threadId:z.number().int().min(1).optional().nullable(),interval:z.number().int().min(60).max(3600),failures:z.number().int().min(2).max(10),recoveries:z.number().int().min(2).max(10)});
 export const monitoringDefaults={enabled:false,chatId:'',threadId:null,interval:300,failures:3,recoveries:2};
@@ -41,9 +41,9 @@ export function createMonitoring(store,{clock=Date.now,fetchImpl=fetch,paused=()
   function targetsFor(probe,cfg,nodes){
     const targets=[];
     for(const n of nodes.filter(n=>n.enabled&&n.id===probe.id)){
-      if(isLanding(n)){
-        if(probe.report?.monitorProtocol===3)targets.push({kind:'overseas',nodeId:n.id,host:'Cloudflare 1.1.1.1 / 1.0.0.1',port:0,family:0,region:'self'});
-      }else if([2,3].includes(probe.report?.monitorProtocol))targets.push({kind:'connectivity',nodeId:n.id,host:n.ipv4||n.ipv6||'本机网络',port:0,family:0,region:'self',scope:hash([n.ipv4,n.ipv6])});
+      if(isPrivateLanding(n)||isLanding(n)&&probe.report?.monitorProtocol!==4){
+        if([3,4].includes(probe.report?.monitorProtocol))targets.push({kind:'overseas',nodeId:n.id,host:'Cloudflare 1.1.1.1 / 1.0.0.1',port:0,family:0,region:'self'});
+      }else if([2,3,4].includes(probe.report?.monitorProtocol))targets.push({kind:'connectivity',nodeId:n.id,host:n.ipv4||n.ipv6||'本机网络',port:0,family:0,region:'self',scope:hash([n.ipv4,n.ipv6])});
       const b=n.observed??n.applied;if(!b)continue;
       let s;try{s=readSettings(b);}catch{}
       for(const [key,family] of [['ipv4',4],['ipv6',6]]){
@@ -55,7 +55,7 @@ export function createMonitoring(store,{clock=Date.now,fetchImpl=fetch,paused=()
     return targets.map(t=>({...t,id:hash([t.kind,t.nodeId,t.host,t.port,t.family,t.scope,t.direction]).slice(0,40)}));
   }
   function plan(probe){
-    const cfg=settings();if(!cfg.enabled||![1,2,3].includes(probe.report?.monitorProtocol))return null;
+    const cfg=settings();if(!cfg.enabled||![1,2,3,4].includes(probe.report?.monitorProtocol))return null;
     const signature=configHash(cfg),current=store.get('node',probe.id)??probe;
     const targets=targetsFor(probe,cfg,store.list('node'));
     const targetHash=hash(targets.map(t=>t.id).sort());
@@ -127,7 +127,7 @@ export function createMonitoring(store,{clock=Date.now,fetchImpl=fetch,paused=()
   function status(){const cfg=settings();return {settings:publicSettings(),incidents:store.list('monitor').filter(r=>['sni','connectivity','tcp','overseas'].includes(r.kind)).map(r=>{
     const {verdict,samples}=assessment(r,cfg),stale=r.signature!==configHash(cfg)||!samples.length;
     return {...r,current:targetCurrent(r,cfg),stale,assessment:stale||verdict===null?'insufficient':verdict?'alert':'reachable',evidence:samples.map(s=>({region:s.region,ok:s.ok,count:s.count,at:s.at}))};
-  }).sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0)).slice(0,200),notifications:store.list('notification').sort((a,b)=>b.createdAt-a.createdAt).slice(0,50).map(({text,destinationHash,...safe})=>safe),notice:'三项独立告警：中转 → 落地、落地 → 中转、落地海外连通；任一项连续失败达到设置轮数即通知。落地机不检测国内目标。需 Agent 1.3.6；TCP 可达不代表完整代理链路可用。',upgradeRequired:store.list('node').filter(n=>n.enabled&&n.report?.monitorProtocol!==3).map(n=>({id:n.id,name:n.name}))};}
+  }).sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0)).slice(0,200),notifications:store.list('notification').sort((a,b)=>b.createdAt-a.createdAt).slice(0,50).map(({text,destinationHash,...safe})=>safe),notice:'三项独立告警：中转 → 落地、落地 → 中转、落地海外连通；任一项连续失败达到设置轮数即通知。公开 NAT 入口同时检测国内三网 / Cloudflare；纯互联落地仅检测海外。公开入口需更新 Agent；本机出站检测不能单独确认入站被墙，TCP 可达也不代表完整代理链路可用。',upgradeRequired:store.list('node').filter(n=>n.enabled&&(![3,4].includes(n.report?.monitorProtocol)||hasPublicEntry(n)&&n.report?.monitorProtocol!==4)).map(n=>({id:n.id,name:n.name}))};}
   async function test(){const cfg=settings();if(!cfg.botToken||!cfg.chatId)throw Error('请先保存 Bot Token 和 Chat ID');return sendTelegram(cfg,'Xray Panel 测试通知：Telegram 接口已收到此消息。',fetchImpl);}
   async function drain(){
     if(sending||paused())return;sending=true;
