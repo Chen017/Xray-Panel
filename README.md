@@ -85,7 +85,7 @@ npm start
 
 打开 `http://127.0.0.1:3000`，初始密码见本地 `.env`。开发模式运行 `npm run dev`，访问 `http://127.0.0.1:5173`。
 
-可运行 `npm test` 与 `npm run test:agent`。真实核心集成测试先用 `python scripts/fetch-test-tools.py` 获取工具，再运行 `npm run test:e2e`；Windows 需 WSL Debian（可用 `XRAY_TEST_WSL` 指定发行版），Linux 直接运行。结果与验证边界见 [测试记录](docs/test-report.md)，v1.3.0 修复见 [审查报告](docs/review-v1.3.0.md)。
+完整测试命令、模块职责、发布流程和历史兼容性见[维护指南](docs/maintenance.md)。[历史测试记录](docs/test-report.md)和 [v1.3.0 审查报告](docs/review-v1.3.0.md)对应各自标注的版本。
 
 ## 🙏 开源来源
 

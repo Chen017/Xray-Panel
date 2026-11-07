@@ -4,17 +4,27 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { randomBytes,createHash } from 'node:crypto';
+import YAML from 'yaml';
 
 const version=JSON.parse(readFileSync('package.json','utf8')).version;
 const archive=`release/xray-panel-${version}.tar.gz`;
 const digest=createHash('sha256').update(readFileSync(archive)).digest('hex');
-assert.ok(readFileSync(archive+'.sha256','utf8').startsWith(digest),'Release checksum');
+assert.equal(readFileSync(archive+'.sha256','utf8').trimEnd(),`${digest}  ${path.basename(archive)}`,'Release checksum and filename');
 const listed=spawnSync('tar',['-tzf',archive],{encoding:'utf8'});assert.equal(listed.status,0,listed.stderr);
 const names=listed.stdout.trim().split(/\r?\n/).map(n=>n.replace(/^\.\//,''));
 assert.ok(names.includes('.env.example')&&names.includes('dist/index.html'));
 assert.ok(!names.some(n=>n.startsWith('/')||n.split('/').includes('..')||n==='.env'||/^(\.local|data|node_modules)\//.test(n)||n.includes('.sqlite')),'Release must exclude unsafe paths and runtime secrets');
 mkdirSync('.local',{recursive:true});const directory=mkdtempSync(path.resolve('.local','release-smoke-'));
 const extracted=spawnSync('tar',['-xzf',archive,'-C',directory],{encoding:'utf8'});assert.equal(extracted.status,0,extracted.stderr);
+const lock=JSON.parse(readFileSync(path.join(directory,'package-lock.json'),'utf8'));
+assert.equal(lock.version,version,'Release lockfile version');
+assert.equal(lock.packages[''].version,version,'Release root package version');
+const bootstrap=readFileSync(path.join(directory,'deploy/bootstrap.sh'),'utf8');
+assert.equal(/^version=(\S+)$/m.exec(bootstrap)?.[1],version,'Release bootstrap version');
+for(const filename of ['compose.yaml','deploy/1panel/docker-compose.yml']){
+  const compose=YAML.parse(readFileSync(path.join(directory,filename),'utf8'));
+  assert.equal(compose.services.panel.image,'${PANEL_IMAGE:-ghcr.io/chen017/xray-panel:'+version+'}',filename+' default image must match the packaged version');
+}
 const {createSystem}=await import(pathToFileURL(path.join(directory,'server/app.mjs')));
 const config={dbPath:path.join(directory,'smoke-data/panel.sqlite'),masterKey:randomBytes(32).toString('hex'),password:'Disposable-release-smoke-password!',secure:false,adminOrigin:'http://127.0.0.1',subscriptionOrigin:'http://127.0.0.1',agentOrigin:'http://127.0.0.1'};
 const system=createSystem(config),servers=await Promise.all(['admin','subscription','agent'].map(role=>new Promise(resolve=>{const s=system[role].listen(0,'127.0.0.1',()=>resolve(s));})));

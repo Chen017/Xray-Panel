@@ -15,9 +15,11 @@
     "setup": "node scripts/setup.mjs",
     "test": "node --test tests/*.test.mjs",
     "test:agent": "python -m unittest discover -s agent/tests -v",
+    "test:deploy": "python -m unittest discover -s deploy/tests -v",
     "test:e2e": "node tests/e2e.mjs",
     "test:native": "node tests/native-config.mjs",
     "test:download": "node tests/provider-download-e2e.mjs",
+    "test:nat": "node tests/nat-split-e2e.mjs",
     "test:release": "node tests/release-smoke.mjs"
   },
   "dependencies": {

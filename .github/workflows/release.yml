@@ -1,7 +1,7 @@
 name: Test and publish
 on:
   push:
-    branches: ['**']
+    branches: [main]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -12,74 +12,155 @@ on:
         default: false
 permissions:
   contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: xray-panel-${{ (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch')) && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch') }}
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.value }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24.22.1'
           cache: npm
+      - name: Check package version and release tag
+        id: version
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::Expected release tag v$version, got $GITHUB_REF_NAME"
+            exit 1
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
       - run: npm ci --no-audit --no-fund
       - run: npm test
       - run: npm run test:agent
-      - run: python3 -m unittest discover -s deploy/tests -v
+      - run: npm run test:deploy
+      - name: Cache pinned integration runtimes
+        id: test-tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: .local/tools
+          key: panel-test-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/fetch-test-tools.py') }}
       - name: Fetch pinned native integration runtimes
+        if: steps.test-tools.outputs.cache-hit != 'true'
         run: python3 scripts/fetch-test-tools.py
       - run: npm run test:native
       - run: npm run test:e2e
+      - run: npm run test:download
       - run: npm run build
       - run: npm run package
       - run: npm run test:release
-      - name: Build and verify production container
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Build production smoke image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: 'false'
+        with:
+          context: .
+          load: true
+          tags: xray-panel:smoke
+          cache-from: type=gha,scope=panel-smoke
+          cache-to: type=gha,scope=panel-smoke,mode=max,ignore-error=true,timeout=1m
+      - name: Verify production container
         run: |
-          docker build -t xray-panel:smoke .
           docker image inspect --format 'Image size: {{.Size}} bytes' xray-panel:smoke
           node tests/image-smoke.mjs xray-panel:smoke
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e300ddbb5b0abf93d19952f4752f3646cd9 # v7
+        if: startsWith(github.ref, 'refs/tags/v')
         with:
           name: release
-          path: release/*
+          path: |
+            release/xray-panel-${{ steps.version.outputs.value }}.tar.gz
+            release/xray-panel-${{ steps.version.outputs.value }}.tar.gz.sha256
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
   publish:
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_image)
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: xray-panel-publish
+      queue: max
     permissions:
       contents: write
       packages: write
     steps:
-      - uses: actions/checkout@v4
-      - name: Validate release tag
+      - name: Check whether the tag already has a release
+        id: release
         if: startsWith(github.ref, 'refs/tags/v')
-        run: test "${GITHUB_REF_NAME}" = "v$(node -p 'require("./package.json").version')"
-      - uses: actions/download-artifact@v4
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.test.outputs.version }}
+        run: |
+          response="$RUNNER_TEMP/release.json"
+          status=$(curl -sS --retry 2 --max-time 30 -o "$response" -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME")
+          case "$status" in
+            200)
+              asset="xray-panel-$VERSION.tar.gz"
+              if ! jq -e --arg name "$asset" '.draft == false and
+                ([.assets[] | select(.state == "uploaded" and .size > 0) | .name] |
+                  index($name) != null and index($name + ".sha256") != null)' "$response" >/dev/null; then
+                echo "::error::Existing release $GITHUB_REF_NAME is incomplete. Inspect its draft and assets."
+                exit 1
+              fi
+              echo 'exists=true' >> "$GITHUB_OUTPUT"
+              echo "$GITHUB_REF_NAME is already published."
+              ;;
+            404) ;;
+            *) echo "::error::Release lookup failed (HTTP $status)"; exit 1 ;;
+          esac
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: steps.release.outputs.exists != 'true'
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        if: startsWith(github.ref, 'refs/tags/v') && steps.release.outputs.exists != 'true'
         with:
           name: release
           path: release
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
+        if: steps.release.outputs.exists != 'true'
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        if: steps.release.outputs.exists != 'true'
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
+        if: steps.release.outputs.exists != 'true'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Image metadata
-        id: meta
-        run: echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        if: steps.release.outputs.exists != 'true'
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/chen017/xray-panel:${{ steps.meta.outputs.version }}
+          tags: ghcr.io/chen017/xray-panel:${{ needs.test.outputs.version }}
+          cache-from: |
+            type=gha,scope=panel-smoke
+            type=gha,scope=panel-publish
+          cache-to: type=gha,scope=panel-publish,mode=max,ignore-error=true,timeout=1m
           labels: |
             org.opencontainers.image.source=https://github.com/Chen017/Xray-Panel
-            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.version=${{ needs.test.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.licenses=AGPL-3.0-only
       - name: Publish release after image upload
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && steps.release.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" release/* --title "Xray Panel $GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" release/* --verify-tag --title "Xray Panel $GITHUB_REF_NAME" --generate-notes

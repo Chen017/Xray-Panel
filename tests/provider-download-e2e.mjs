@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {createServer,request} from 'node:http';
 import {connect} from 'node:net';
-import {mkdtempSync,mkdirSync,existsSync} from 'node:fs';
+import {mkdtempSync,mkdirSync} from 'node:fs';
 import path from 'node:path';
 import * as age from 'age-encryption';
 import YAML from 'yaml';
@@ -18,7 +18,7 @@ try{
  const port=await listen(origin),proxyPort=await listen(proxy),temporary=createServer();const controllerPort=await listen(temporary);await new Promise(r=>temporary.close(r));const base=`http://127.0.0.1:${port}`,controller=`http://127.0.0.1:${controllerPort}`,auth={Authorization:'Bearer disposable-controller'};
  const cfg={...YAML.parse(providerConfig({url:base+'/subscription'},'disposable-test-token',identity)),...downloadGroups(),proxies:[{name:'Bootstrap Proxy',type:'http',server:'127.0.0.1',port:proxyPort}],'mixed-port':0,mode:'rule','log-level':'info','external-controller':`127.0.0.1:${controllerPort}`,secret:'disposable-controller',rules:['MATCH,DIRECT']};
  cfg['proxy-groups'].unshift({name:'Existing Proxy',type:'select',proxies:['Bootstrap Proxy']});const group=cfg['proxy-groups'][1];group.url=base+'/probe';group.interval=1;group.timeout=1000;cfg['proxy-providers'].xray['health-check'].enable=false;
- const binary=linuxPath(process.env.MIHOMO_LINUX_BIN??(existsSync('.local/tools/mihomo')?'.local/tools/mihomo':'../Xray-Script/Xray/.test-tools/mihomo'));
+ const binary=linuxPath(process.env.MIHOMO_LINUX_BIN??'.local/tools/mihomo');
  await linux.call({action:'mihomo-start',folder:linuxPath(folder),binary,yaml:YAML.stringify(cfg)});
  const api=(suffix,method='GET')=>linux.call({action:'http',url:controller+suffix,method,headers:auth});
  let state;for(let i=0;i<80;i++){state=await api('/providers/proxies/xray');if(state.status===200&&JSON.parse(state.body).proxies?.length===1)break;await new Promise(r=>setTimeout(r,100));}
