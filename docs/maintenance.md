@@ -27,6 +27,8 @@ npm run test:native
 npm run test:e2e
 npm run test:download
 npm run build
+npx playwright install chromium webkit
+npm run test:ui
 npm run package
 npm run test:release
 docker build -t xray-panel:smoke .
@@ -37,9 +39,11 @@ node tests/image-smoke.mjs xray-panel:smoke
 
 定制分路验收运行 `MIHOMO_NAT_BIN=/path/to/custom-mihomo XRAY_NATIVE_BIN=/path/to/xray npm run test:nat`。两个核心应为当前运行系统的原生可执行文件。常规 CI 使用固定官方 Mihomo，定制能力与真机网络仍需另外验证。详见 [NAT 分路与升级记录](nat-entry-review-2026-11-05.md)。
 
+`test:ui` 访问实际生产构建、真实 API 和临时 SQLite 数据库。测试使用桌面 Chromium、Android 触控 Chromium、iPhone 触控 WebKit，每组都以浅色和深色各运行一次。覆盖登录与主题持久化、导航、节点筛选和排序、接入凭据、分流规则的编辑和保存、节点编辑器下拉与任务窗口、设备授权和下行窗口、设置、备份及指南页签。运行 `npm run test:ui -- --project iphone-dark` 可单独复现一组。失败截图和操作轨迹在 `test-results/ui`，可用 `npx playwright show-trace <trace.zip>` 查看。设备配置模拟视口和触控，真机浏览器仍需单独验收。
+
 ## CI 与发布
 
-`Test and publish` 验证 `main` 推送、PR、`v*` tag 和手动触发。同一 PR 或 `main` 的新提交替代旧验证，普通功能分支通过 PR 或手动触发。工作流缓存 npm 下载、固定测试核心和 Docker 构建层，保留解包及容器冒烟检查。Docker 缓存未命中时正常构建。
+`Test and publish` 验证 `main` 推送、PR、`v*` tag 和手动触发。同一 PR 或 `main` 的新提交替代旧验证，普通功能分支通过 PR 或手动触发。工作流缓存 npm 下载、固定测试核心和 Docker 构建层，在打包前运行浏览器 UI 回归，并保留解包及容器冒烟检查。浏览器回归失败时上传截图与轨迹。Docker 缓存未命中时正常构建。
 
 发布前更新 `package.json`、`package-lock.json`、`deploy/bootstrap.sh` 的版本，以及 README、部署教程中的引导命令和两个 Compose 示例的默认镜像。tag 必须等于 `v` 加上包版本。冒烟测试从实际归档读回锁文件、引导脚本和 Compose，核对版本一致性。准备好版本提交后推送对应 tag，验证成功才上传 `linux/amd64` 与 `linux/arm64` GHCR 镜像，然后发布 `xray-panel-<版本>.tar.gz` 及同名 `.sha256`。只有发布作业需要仓库内容和包的写权限。
 
@@ -53,5 +57,6 @@ node tests/image-smoke.mjs xray-panel:smoke
 | 安装更新可能触碰已有卷和 SQLite WAL | `deploy/tests/test_lifecycle.py` 检查原服务、卷及凭据保留和回滚，`tests/lifecycle-snapshot.test.mjs` 检查大数据库快照。 |
 | NAT 公开入口与内部互联使用不同的 Vision 及凭据策略 | `tests/nat-entry.test.mjs` 和 `test:nat` 检查旧配置迁移、公开入口无 Vision、独立上下行和零 RTT 恢复。[分路记录](nat-entry-review-2026-11-05.md)列出具体原因、边界和部署顺序。 |
 | Script 配置被人工修改后部署可能覆盖新状态 | `test:e2e` 模拟部署前并发变动并验证锁内拒绝。升级捆绑 Script 时保留 `PANEL_UNATTENDED` 并更新[来源记录](../THIRD_PARTY_NOTICES.md)。 |
+| 手机滚动节点编辑器后，下拉选项可能无法点击，重复选择当前项也可能清空必选值 | 下拉定位以视口为基准，单选保持当前值。`tests/ui/panel.spec.mjs` 通过触控验证选择、长规则编辑和保存，并检查 Escape 分别关闭下拉和预览窗口。 |
 
 [历史验证记录](test-report.md)和[审查修复记录](review-v1.3.0.md)用于追溯已有版本的证据。

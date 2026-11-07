@@ -1,6 +1,6 @@
 import { useEffect,useState,type ReactNode } from 'react';
 import { ActionIcon,Alert,AppShell,Badge,Box,Burger,Button,Card,Checkbox,Code,Divider,Drawer,Group,Loader,Modal,MultiSelect,NumberInput,PasswordInput,ScrollArea,Select,SimpleGrid,Stack,Switch,Table,Tabs,Text,Textarea,TextInput,ThemeIcon,Title,Tooltip } from '@mantine/core';
-import { useDisclosure,useMediaQuery } from '@mantine/hooks';
+import { useDisclosure,useMediaQuery,useWindowEvent } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
 import { IconActivity,IconArrowDown,IconArrowUp,IconBook,IconCheck,IconChevronRight,IconCircleCheck,IconCloudDownload,IconCode,IconCopy,IconDeviceLaptop,IconDownload,IconExternalLink,IconKey,IconLayoutDashboard,IconLogout,IconNetwork,IconPlayerPlay,IconPlus,IconRefresh,IconRocket,IconSearch,IconServer,IconSettings,IconShieldLock,IconTerminal2,IconTrash,IconX } from '@tabler/icons-react';
 import * as age from 'age-encryption';
@@ -28,6 +28,13 @@ export function App(){
   const [nodes,setNodes]=useState<RecordData[]>([]),[devices,setDevices]=useState<RecordData[]>([]),[jobs,setJobs]=useState<RecordData[]>([]),[audits,setAudits]=useState<RecordData[]>([]);
   const [opened,{toggle,close}]=useDisclosure(),[adding,setAdding]=useState(false),[editing,setEditing]=useState<string|null>(null),[secret,setSecret]=useState<{title:string;value:string;agent?:boolean}|null>(null),[jobView,setJobView]=useState<RecordData|null>(null);
   const [ordering,setOrdering]=useState(false);
+  useWindowEvent('keydown',event=>{
+    if(!editing||event.key!=='Escape'||event.isComposing)return;
+    if(event.target instanceof Element&&event.target.getAttribute('data-mantine-stop-propagation')==='true')return;
+    // The editor stays open while an overlaid dialog handles Escape.
+    const dialogs=document.querySelectorAll('[role="dialog"][aria-modal="true"]');
+    if(dialogs.length===1&&dialogs[0].classList.contains('node-editor-dialog'))setEditing(null);
+  },{capture:true});
   const desktop=useMediaQuery('(min-width:48em)');
   useEffect(()=>{if(desktop)close();},[desktop,close]);
   const [search,setSearch]=useState(''),[selected,setSelected]=useState<string[]>([]),[nodeForm,setNodeForm]=useState({name:'',ipv4:'',ipv6:'',enabled:true});
@@ -57,7 +64,7 @@ export function App(){
     </Box></AppShell.Main>
     <Modal opened={adding} onClose={()=>setAdding(false)} title="添加 Xray 节点" centered><form onSubmit={addNode}><Stack><Text size="sm" c="dimmed">此处填写客户端连接地址。Agent 通过独立凭据主动连接，无需 SSH 密码。</Text><TextInput label="节点名称" placeholder="例如：东京线路 01" required value={nodeForm.name} onChange={e=>setNodeForm({...nodeForm,name:e.currentTarget.value})}/><TextInput label="IPv4 / 域名" placeholder="203.0.113.10" value={nodeForm.ipv4} onChange={e=>setNodeForm({...nodeForm,ipv4:e.currentTarget.value})}/><TextInput label="IPv6 / 域名" placeholder="2001:db8::10" value={nodeForm.ipv6} onChange={e=>setNodeForm({...nodeForm,ipv6:e.currentTarget.value})}/><Button type="submit">创建节点并生成 Agent 凭据</Button></Stack></form></Modal>
     <NodeOrder opened={ordering} onClose={()=>setOrdering(false)} onSaved={reload}/>
-    <Drawer opened={!!current} onClose={()=>setEditing(null)} title={current?.name??'节点管理'} position="right" size="min(1100px, 100vw)">{current&&<NodeEditor node={current} allNodes={nodes} jobs={jobs.filter(j=>j.nodeId===current.id)} reload={reload} onSecret={enrollment} onClose={()=>setEditing(null)}/>}</Drawer>
+    <Drawer opened={!!current} onClose={()=>setEditing(null)} title={current?.name??'节点管理'} position="right" size="min(1100px, 100vw)" closeOnEscape={false} classNames={{content:'node-editor-dialog'}} closeButtonProps={{'aria-label':'关闭节点编辑器'}}>{current&&<NodeEditor node={current} allNodes={nodes} jobs={jobs.filter(j=>j.nodeId===current.id)} reload={reload} onSecret={enrollment} onClose={()=>setEditing(null)}/>}</Drawer>
     <Modal opened={!!secret} onClose={()=>setSecret(null)} title={secret?.title} size="lg"><Alert color="orange" mb="md">请现在保存这些凭据。关闭后，Token 和本地私钥不会再次显示。</Alert>{secret?.agent?<AgentEnrollment value={secret.value}/>:secret&&<>{secret.value.includes('proxy-providers:')?<><Alert mb="md" color="cyan">{downloadGuidance}</Alert><CopyBlock label="复制 provider（合并 xray 子项）" value={YAML.stringify({'proxy-providers':YAML.parse(secret.value)['proxy-providers']})}/><CopyBlock label="复制下载策略组（追加到原列表）" value={YAML.stringify(downloadGroups())}/></>:<CopyBlock label="复制完整配置" value={secret.value}/>}<Button mt="md" variant="light" leftSection={<IconDownload size={16}/>} onClick={()=>download('xray-panel-credentials.txt',secret.value)}>保存到本地</Button></>}</Modal>
     <Modal opened={!!jobView} onClose={()=>setJobView(null)} title={`任务结果 · ${jobView?.action}`} size="xl">{jobView&&<><Group mb="md"><Status value={jobView.status}/><Text c="dimmed" size="xs">{date(jobView.completedAt)}</Text></Group><CopyBlock value={jobView.output||'尚无输出；任务完成后请重新打开结果。'}/></>}</Modal>
   </AppShell>;
