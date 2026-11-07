@@ -41,6 +41,8 @@ node tests/image-smoke.mjs xray-panel:smoke
 
 `test:ui` 访问实际生产构建、真实 API 和临时 SQLite 数据库。测试使用桌面 Chromium、Android 触控 Chromium、iPhone 触控 WebKit，每组都以浅色和深色各运行一次。覆盖登录与主题持久化、导航、节点筛选和排序、接入凭据、分流规则的编辑和保存、节点编辑器下拉与任务窗口、设备授权和下行窗口、设置、备份及指南页签。运行 `npm run test:ui -- --project iphone-dark` 可单独复现一组。失败截图和操作轨迹在 `test-results/ui`，可用 `npx playwright show-trace <trace.zip>` 查看。设备配置模拟视口和触控，真机浏览器仍需单独验收。
 
+手机滚动回归预先写入规则，滚动抽屉并改变视口高度，随后按屏幕坐标触摸规则类型、动作和出站策略。检查菜单选项在视野内、打开时滚动位置不变，以及选中后控件仍在视野内。对涉及焦点和滚动的问题保留这类原始触控用例，避免定位器自动滚动遮住问题。
+
 ## CI 与发布
 
 `Test and publish` 验证 `main` 推送、PR、`v*` tag 和手动触发。同一 PR 或 `main` 的新提交替代旧验证，普通功能分支通过 PR 或手动触发。工作流缓存 npm 下载、固定测试核心和 Docker 构建层，在打包前运行浏览器 UI 回归，并保留解包及容器冒烟检查。浏览器回归失败时上传截图与轨迹。Docker 缓存未命中时正常构建。
