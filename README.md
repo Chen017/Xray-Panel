@@ -30,7 +30,7 @@
 Panel 适用于 Debian / Ubuntu 建站 VPS，需要 root、systemd、Python ≥ 3.10，并能访问 GitHub 和 GHCR。安装器补齐依赖，拉取 amd64 / arm64 Docker 镜像。
 
 ```bash
-(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.3.14/deploy/bootstrap.sh -o "$w"; bash "$w")
+(set -e; w=$(mktemp); trap 'rm -f "$w"' EXIT; curl -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 60 https://raw.githubusercontent.com/Chen017/Xray-Panel/v1.3.15/deploy/bootstrap.sh -o "$w"; bash "$w")
 ```
 
 域名、反向代理和 Access 按上方教程配置。

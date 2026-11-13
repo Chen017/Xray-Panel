@@ -200,9 +200,16 @@ export function createSystem(config) {
   admin.put('/api/nodes/:id/subscription-names',(req,res)=>{
     const n=getNode(req.params.id),input=nodeNamesSchema.parse(req.body);
     if(input.revision!==(n.subscriptionNameRevision??0))throw error('订阅名称已被另一页面修改，请重新载入',409);
-    const allowed=new Set(nodeNameEntries(n,config.masterKey).map(e=>e.key));
+    const entries=nodeNameEntries(n,config.masterKey),allowed=new Map(entries.map(e=>[e.key,e]));
     if(Object.keys(input.names).some(key=>!allowed.has(key)))throw error('节点配置已变化，请重新载入名称列表',409);
-    const baseChanged=input.subscriptionName!==(n.subscriptionName??''),names=baseChanged?{}:{...n.subscriptionNames};for(const[key,value]of Object.entries(input.names)){if(baseChanged&&value===n.subscriptionNames?.[key])continue;if(value)names[key]=value;else delete names[key];}
+    const baseChanged=input.subscriptionName!==(n.subscriptionName??''),names=baseChanged?{}:{...n.subscriptionNames};
+    for(const [key,value] of Object.entries(input.names)){
+      const entry=allowed.get(key);
+      if(baseChanged&&value===entry.customName)continue;
+      // Keep an explicit empty shared name so a previous per-exit alias stays cleared.
+      if(value||entry.sharedNat)names[key]=value;
+      else delete names[key];
+    }
     const updated={...n,subscriptionName:input.subscriptionName,subscriptionNames:names,subscriptionNamingVersion:1,subscriptionNameRevision:(n.subscriptionNameRevision??0)+1};
     assertUniqueNames(store.list('node').map(x=>x.id===n.id?updated:x),store.list('device'),config.masterKey);
     store.put('node',n.id,updated);store.audit('node.subscription-names.updated',n.id);res.json(nodePresentation(updated));

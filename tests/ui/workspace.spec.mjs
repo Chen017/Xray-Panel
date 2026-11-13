@@ -74,14 +74,21 @@ test('node search, selection, ordering and Agent enrollment', async ({ page, pan
 test('editor selectors, nested dialogs and operation jobs work end to end', async ({ page, panel, press, isMobile }) => {
   await login(page, panel, press);
   const editor = await openEditor(page, press);
+  const nodeInfo=editor.getByRole('button',{name:'节点信息',exact:true});
+  for(const tab of ['基础参数','分流规则','线路 / 落地','运维']){
+    await press(editor.getByRole('tab',{name:tab,exact:true}));
+    await expect(nodeInfo).toBeHidden();
+  }
+  await press(editor.getByRole('tab',{name:'高级',exact:true}));
   await expect(editor.getByLabel('IPv4 来源')).toBeHidden();
-  await press(editor.getByRole('button', { name: '节点信息', exact: true }));
+  await press(nodeInfo);
   const ipv4Source=editor.getByRole('radiogroup',{name:'IPv4 来源'});
   await press(ipv4Source.getByText('自动检测',{exact:true}));
   await expect(editor.getByLabel('IPv4 手动覆盖')).toBeHidden();
   await press(ipv4Source.getByText('手动指定',{exact:true}));
   await expect(editor.getByLabel('IPv4 手动覆盖')).toBeVisible();
-  await press(editor.getByRole('button', { name: '节点信息', exact: true }));
+  await press(nodeInfo);
+  await press(editor.getByRole('tab',{name:'基础参数',exact:true}));
   await press(editor.getByRole('button', { name: '订阅名称', exact: true }));
   const names = page.getByRole('dialog', { name: `统一订阅名称 · ${nodeName}` });
   await names.getByLabel('订阅基础名称').fill('统一测试名');
@@ -194,7 +201,9 @@ test('security forms, encrypted backup download and documentation tabs', async (
 
 test('NAT IPv4 entry can be selected and saved for a direct exit',async({page,panel,press})=>{
   const nat=panel.secondary,natConfig={
-    role:'landing',relay_enabled:false,landing_ip:nat.ipv4,entry_listen_port:25555,
+    role:'landing',landing_ip:nat.ipv4,entry_listen_port:25555,
+    listen_port:24443,external_port:24443,transport_uuid:'00000000-0000-4000-8000-000000000003',
+    encryption:'mlkem768x25519plus.native.0rtt.test',decryption:'mlkem768x25519plus.native.600s.test',
     entry_uuid:'00000000-0000-4000-8000-000000000002',
     entry_encryption:'mlkem768x25519plus.random.0rtt.test',entry_decryption:'mlkem768x25519plus.random.600s.test'
   };
@@ -213,4 +222,12 @@ test('NAT IPv4 entry can be selected and saved for a direct exit',async({page,pa
   await expect.poll(()=>panel.system.store.get('node',panel.node.id).draft.files['relay.json']).toEqual({version:1,role:'none',nat_entries:{direct:{nodeId:nat.id}}});
   await press(editor.getByRole('tab',{name:'线路 / 落地'}));
   await expect(editor.getByLabel('IPv4 接入')).toHaveValue(secondNodeName);
+  await choose(page,press,editor.getByLabel('互联角色'),'线路机 → 多落地出口');
+  await choose(page,press,editor.getByLabel('添加已接入的落地机'),secondNodeName);
+  const interval=editor.getByLabel('探测间隔');
+  const order=editor.getByLabel('出口顺序（落地 ID，用逗号分隔）');
+  await interval.scrollIntoViewIfNeeded();
+  const left=await interval.boundingBox(),right=await order.boundingBox();
+  expect(left.height).toBeCloseTo(right.height,1);
+  if(right.x>left.x+left.width)expect(left.y).toBeCloseTo(right.y,1);
 });

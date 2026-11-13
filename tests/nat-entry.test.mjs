@@ -4,7 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {fixtureBundle,testSystem} from './helpers.mjs';
 import {resolveLinkedAddresses} from '../shared/addresses.mjs';
 import * as age from 'age-encryption';
-import {compileDevices,deviceProviderProxies,providerProxies,patchRouting,readSettings,patchSettings,deviceUuid,relaySchema,natEntryClients,providerNameEntries} from '../shared/config.mjs';
+import {compileDevices,deviceProviderProxies,providerProxies,patchRouting,readSettings,patchSettings,deviceUuid,relaySchema,natEntryClients,providerNameEntries,subscriptionNameKey} from '../shared/config.mjs';
 
 const master='nat-entry-test-master';
 function topology(){
@@ -142,15 +142,26 @@ test('entry-only NAT supports both exits and Vision without publishing before th
     target.applied=target.observed=targetBundle;
     assert.equal(deviceProviderProxies(nodes,device,master).length,selected?0:6);
     target.applied=target.observed=compileDevices(targetBundle,target,[device],master,nodes);
+    const proxies=deviceProviderProxies(nodes,device,master);
+    const guards=proxies.filter(p=>p.name.endsWith('NAT-v4-Entry'));
+    assert.equal(guards.length,selected?1:0);
+    if(selected){
+      assert.equal(guards[0].uuid,deviceUuid(master,device,source.id,'direct'));
+      const splitOnly={...device,grants:[{...device.grants[0],modes:['split']}]};
+      assert.equal(deviceProviderProxies(nodes,splitOnly,master).length,3);
+      const landingOnly={...splitOnly,grants:[{...splitOnly.grants[0],routes:['1']}]};
+      const limited=deviceProviderProxies(nodes,landingOnly,master);
+      assert.equal(limited.find(p=>p.name===guards[0].name).uuid,deviceUuid(master,device,source.id,'1'));
+    }
     for(const exit of ['direct','1']){
-      const proxies=deviceProviderProxies(nodes,device,master),id=deviceUuid(master,device,source.id,exit);
+      const id=deviceUuid(master,device,source.id,exit);
       const vision=proxies.find(p=>p.uuid===id&&p.flow==='xtls-rprx-vision');
       assert.equal(vision.server,source.ipv4);
       const split=proxies.find(p=>p.uuid===id&&p['xhttp-opts']?.['download-settings']);
       const dialer=reverse?split['xhttp-opts']['download-settings']['dialer-proxy']:split['dialer-proxy'];
       assert.equal(Boolean(dialer),selected);
       assert.equal(vision['dialer-proxy'],dialer);
-      if(selected)assert.equal(proxies.find(p=>p.name===dialer).server,target.ipv4);
+      if(selected)assert.equal(dialer,guards[0].name);
       const rule=source.applied.files['config.json'].routing.rules.find(r=>r.user?.includes(`panel-${device.id}-${exit}`));
       assert.equal(rule?.outboundTag,exit==='direct'?undefined:'relay-out-1');
     }
@@ -160,4 +171,29 @@ test('entry-only NAT supports both exits and Vision without publishing before th
   assert.deepEqual(unresolved.files['relay.json'].nat_entries.direct,{nodeId:target.id});
   assert.deepEqual(deviceProviderProxies(nodes,device,master),[]);
   assert.throws(()=>resolveLinkedAddresses(source.applied,nodes,{strictNat:true}),/尚未就绪/);
+});
+
+test('the shared entry preserves the previous direct alias and can be renamed or reset',async()=>{
+  const sys=await testSystem();try{
+    await sys.login();
+    const {source,target,device,nodes}=topology();
+    const relay=source.applied.files['relay.json'];
+    relay.nat_entries={direct:{nodeId:target.id},'1':{nodeId:target.id}};
+    device.grants[0].routes=['direct','1'];
+    source.applied=source.observed=compileDevices(resolveLinkedAddresses(source.applied,nodes),source,[device],master);
+    const previous=subscriptionNameKey(source.id,'conf/VLESS-443.json','direct','nat4-entry');
+    source.subscriptionNames={[previous]:'旧入口名称'};
+    sys.store.put('node',source.id,source);
+    const url=`/nodes/${source.id}/subscription-names`;
+    const catalog=(await sys.call(url)).body;
+    const [guard]=catalog.entries.filter(e=>e.mode==='nat4-entry');
+    assert.equal(catalog.entries.filter(e=>e.mode==='nat4-entry').length,1);
+    assert.equal(guard.name,'旧入口名称');
+    const save=(revision,name)=>sys.call(url,'PUT',{revision,subscriptionName:'',names:{[guard.key]:name}});
+    const renamed=await save(catalog.revision,'共用入口');
+    assert.equal(renamed.status,200);
+    const reset=await save(renamed.body.revision,'');
+    assert.equal(reset.status,200);
+    assert.equal(reset.body.entries.find(e=>e.key===guard.key).name,guard.defaultName);
+  }finally{await sys.close();}
 });

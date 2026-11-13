@@ -119,7 +119,7 @@ xhttp-opts:
 
 需要 [定制 Mihomo](https://github.com/Chen017/mihomo/releases/latest) 支持独立下行拨号与 Provider 内部前置代理引用。Panel 1.3.11 配置 NAT 上传时会在下载设置内显式导出 `dialer-proxy: ""`，使 IPv6 下载直连；反向分路则只对下载指定 NAT 入口。入口保持随机加密与零 RTT，关闭入口客户端 TFO。
 
-选择「本机直出」也可通过 NAT 公开入口接入线路机。选择托管 NAT 后，订阅须等待线路机和 NAT 都部署成功。Panel 使用加密 Provider，Script 使用 Mihomo YAML。旧配置中的 IPv4 Vision 可继续直连原 NAT。重新选择 NAT 入口后，Vision IPv4 也会经过线路机并使用所选出口。
+选择「本机直出」也可通过 NAT 公开入口接入线路机。 同一条线路的多个出口使用同一个托管 NAT 入口时，订阅只发布一个共用的 NAT 入口。各出口继续使用独立的线路凭据。选择托管 NAT 后，订阅须等待线路机和 NAT 都部署成功。Panel 使用加密 Provider，Script 使用 Mihomo YAML。旧配置中的 IPv4 Vision 可继续直连原 NAT。重新选择 NAT 入口后，Vision IPv4 也会经过线路机并使用所选出口。
 
 ## 更新与排错
 

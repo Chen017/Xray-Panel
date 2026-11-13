@@ -13,14 +13,14 @@ export function assertUniqueNames(nodes,devices,master) {
   for(const entries of catalogs.values())check(entries.map(e=>e.name));
   // Validate future grants too: a new device's UUID has not been deployed yet.
   for(const device of devices.filter(d=>!d.revoked))check(nodes.filter(n=>n.enabled).flatMap(n=>{
-    const g=device.grants.find(g=>g.nodeId===n.id);
-    if(!g)return [];
+    const grant=device.grants.find(g=>g.nodeId===n.id);
+    if(!grant)return [];
     const relay=(n.applied??n.draft)?.files['relay.json'];
     return catalogs.get(n.id).filter(e=>{
-      if(!g.routes.includes(e.route))return false;
-      if(e.mode!=='nat4-entry')return g.modes.includes(e.mode);
-      const entry=natRouteEntry(relay,e.route);
-      return g.modes.includes('split')||g.modes.includes('single4')||(!entry?.legacy&&g.modes.includes('vision4'));
+      if(e.mode!=='nat4-entry')return grant.routes.includes(e.route)&&grant.modes.includes(e.mode);
+      return (e.sharedRoutes??[e.route]).some(route=>grant.routes.includes(route)&&(
+        grant.modes.includes('split')||grant.modes.includes('single4')||
+        (grant.modes.includes('vision4')&&!natRouteEntry(relay,route)?.legacy)));
     }).map(e=>e.name);
   }));
 }
