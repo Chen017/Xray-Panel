@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { compileDevices,providerProxies,providerLinks,deviceProviderProxies,deviceProviderLinks,readSettings,patchSettings,patchRouting,hashBundle,validateBundle,vlessLink,newBundle } from '../shared/config.mjs';
+import { compileDevices,providerProxies,deviceProviderProxies,readSettings,patchSettings,patchRouting,hashBundle,validateBundle,newBundle } from '../shared/config.mjs';
 import { settings,fixtureBundle } from './helpers.mjs';
 const master='a'.repeat(64),node={id:randomUUID(),name:'东京 "线路"',ipv4:'203.0.113.1',ipv6:'2001:db8::1'};
 function device(){return{id:randomUUID(),epoch:randomUUID(),revoked:false,grants:[{nodeId:node.id,routes:['direct'],modes:['split','single4','single6','vision4','vision6']}]};}
@@ -19,7 +19,7 @@ test('custom rules are placed before base blocking rules',()=>{const rule={type:
 test('multi-landing relay and failover order produce distinct per-device route UUIDs',()=>{const d=device();const landings=['1','2'].map(id=>({id,name:`落地 ${id}`,landing_ip:'198.51.100.'+id,landing_port:24443,transport_uuid:randomUUID(),encryption:'mlkem768x25519plus.native.0rtt.test',client_uuid:randomUUID()}));d.grants[0].routes=['direct','1','2'];const base=patchRouting(fixtureBundle(),{relay:{role:'line',landings,failover:{enabled:true,interval:'30s',order:['2','1']}}}),b=compileDevices(base,node,[d],master),m=b.files['config.json'];assert.equal(m.routing.balancers[0].tag,'relay-balancer-2');assert.equal(m.routing.balancers[0].fallbackTag,'loop-relay-1');assert.equal(m.routing.balancers[1].fallbackTag,'direct');assert.equal(new Set(providerProxies(node,b,d,master).map(p=>p.uuid)).size,3);assert.ok(m.routing.rules.some(r=>r.user?.some(u=>u.startsWith('panel-'))&&r.balancerTag==='relay-balancer-2'));});
 test('relay removal removes all relay clients and generated outbounds',()=>{let b=fixtureBundle();const l={id:'1',name:'A',landing_ip:'198.51.100.1',landing_port:24443,transport_uuid:randomUUID(),encryption:'mlkem768x25519plus.native.0rtt.test',client_uuid:randomUUID()};b=patchRouting(b,{relay:{role:'line',landings:[l],failover:{enabled:false,interval:'60s',order:[]}}});b=patchRouting(b,{relay:{role:'none'}});assert.ok(!b.files['relay.json']);assert.ok(!b.files['config.json'].outbounds.some(o=>o.tag.startsWith('relay-')));assert.ok(!JSON.stringify(b).includes(l.client_uuid));});
 test('reject unknown and duplicated failover IDs',()=>{const l={id:'1',name:'A',landing_ip:'198.51.100.1',landing_port:24443,transport_uuid:randomUUID(),encryption:'mlkem768x25519plus.native.0rtt.test',client_uuid:randomUUID()};assert.throws(()=>patchRouting(fixtureBundle(),{relay:{role:'line',landings:[l],failover:{enabled:true,interval:'60s',order:['2']}}}));});
-test('hash is key-order invariant and VLESS split exports retain downloadSettings',()=>{assert.equal(hashBundle({b:2,a:1}),hashBundle({a:1,b:2}));const d=device(),b=compileDevices(fixtureBundle(),node,[d],master),p=providerProxies(node,b,d,master)[0];const url=new URL(vlessLink(p,readSettings(b)));assert.equal(url.protocol,'vless:');assert.equal(JSON.parse(url.searchParams.get('extra')).downloadSettings.address,node.ipv6);});
+test('hash is key-order invariant',()=>assert.equal(hashBundle({b:2,a:1}),hashBundle({a:1,b:2})));
 test('Node and Python hash integers, float exponents, negative zero and Unicode identically',()=>{const value={numbers:[0,-0,1,1.0,1.25,0.000001,1e-7,1e21,9007199254740992,-1.5],text:'测试线路 🗾',nested:{yes:true,no:false,nil:null}};const result=spawnSync(process.platform==='win32'?'python':'python3',['-c',"import sys,json;sys.path.insert(0,'agent');import agent;print(agent.bundle_hash(json.load(sys.stdin)))"],{input:JSON.stringify(value),encoding:'utf8'});assert.equal(result.status,0,result.stderr);assert.equal(result.stdout.trim(),hashBundle(value));});
 
 test('reused landing IDs retain their intended outbound for every original client',()=>{
@@ -34,24 +34,22 @@ test('reused landing IDs retain their intended outbound for every original clien
   }
 });
 
-test('custom XHTTP Host survives provider generation and VLESS upload/download export',()=>{
+test('custom XHTTP Host survives provider upload/download generation',()=>{
   const d=device(),base=fixtureBundle();base.files['conf/VLESS-443.json'].inbounds[2].streamSettings.xhttpSettings.host='transport.example.com';
-  const b=compileDevices(base,node,[d],master),p=providerProxies(node,b,d,master)[0],url=new URL(vlessLink(p,readSettings(b))),extra=JSON.parse(url.searchParams.get('extra'));
+  const b=compileDevices(base,node,[d],master),p=providerProxies(node,b,d,master)[0];
   assert.equal(p.servername,'example.com');assert.equal(p['xhttp-opts'].host,'transport.example.com');
   assert.equal(p['xhttp-opts']['download-settings'].host,'transport.example.com');
-  assert.equal(url.searchParams.get('host'),'transport.example.com');assert.equal(extra.host,'transport.example.com');
-  assert.equal(extra.downloadSettings.xhttpSettings.host,'transport.example.com');
 });
 
-test('each inbound file keeps its native XHTTP fields in exported links',()=>{
+test('each inbound file keeps its native XHTTP fields in exported provider entries',()=>{
   const d=device(),b=fixtureBundle(),second=settings();second.port=8443;second.path='/second';second.xhttp={...second.xhttp,path:second.path,uplinkHTTPMethod:'POST',sessionKey:'other-session'};
   b.files['conf/VLESS-8443.json']=newBundle(second).files['conf/VLESS-8443.json'];
-  const compiled=compileDevices(b,node,[d],master),links=providerLinks(node,compiled,d,master).map(value=>new URL(value));
-  const other=links.find(url=>url.port==='8443'&&url.searchParams.get('type')==='xhttp'),extra=JSON.parse(other.searchParams.get('extra'));
-  assert.equal(other.searchParams.get('path'),'/second');assert.equal(extra.path,'/second');assert.equal(extra.uplinkHTTPMethod,'POST');assert.equal(extra.sessionKey,'other-session');
-  assert.equal(extra.downloadSettings.xhttpSettings.path,'/second');
-  const first=links.find(url=>url.port==='443'&&url.searchParams.get('type')==='xhttp');assert.equal(JSON.parse(first.searchParams.get('extra')).uplinkHTTPMethod,'PUT');
-  assert.ok(!JSON.stringify(providerProxies(node,compiled,d,master)).includes(second.privateKey));
+  const proxies=providerProxies(node,compileDevices(b,node,[d],master),d,master);
+  const other=proxies.find(p=>p.port===8443&&p.network==='xhttp')['xhttp-opts'];
+  assert.equal(other.path,'/second');assert.equal(other['uplink-http-method'],'POST');assert.equal(other['session-key'],'other-session');
+  assert.equal(other['download-settings'].path,'/second');
+  assert.equal(proxies.find(p=>p.port===443&&p.network==='xhttp')['xhttp-opts']['uplink-http-method'],'PUT');
+  assert.ok(!JSON.stringify(proxies).includes(second.privateKey));
 });
 
 test('landing dual inbounds and Scheme 1 NAT v4 entry compilation',()=>{
@@ -81,15 +79,7 @@ test('landing dual inbounds and Scheme 1 NAT v4 entry compilation',()=>{
   assert.equal(proxies[0].flow,undefined);
   assert.equal(proxies[0].encryption,'mlkem768x25519plus.random.0rtt.100-111-1111.75-0-111.50-0-3333.enckey');
 
-  const links=deviceProviderLinks([landingNode],d,master);
-  assert.equal(links.length,1);
-  const u=new URL(links[0]);
-  assert.equal(u.protocol,'vless:');
-  assert.equal(u.port,'35555');
-  assert.equal(u.searchParams.get('security'),'none');
-  assert.equal(u.searchParams.get('type'),'tcp');
-  assert.equal(u.searchParams.get('flow'),null);
-  assert.equal(u.searchParams.get('encryption'),'mlkem768x25519plus.random.0rtt.100-111-1111.75-0-111.50-0-3333.enckey');
+
 });
 
 test('line node NAT v4 split dialer-proxy and vision4 entry export',()=>{

@@ -96,13 +96,9 @@ test('restoring a backup requires authentication and CSRF before parsing a large
   }finally{await s.close();}
 });
 
-test('the links API uses the XHTTP settings belonging to each published file',async()=>{
+test('the retired device links endpoint returns 404',async()=>{
   const f=await fixture();try{
-    const b=f.getCurrent(),second=settings();second.port=8443;second.path='/second-node';second.xhttp={...second.xhttp,path:second.path,uplinkHTTPMethod:'POST'};
-    b.files['conf/VLESS-8443.json']=newBundle(second).files['conf/VLESS-8443.json'];f.setCurrent(b);await f.poll();
-    const d=await f.device();await f.success((await f.poll()).job);
-    const links=(await f.s.call(`/devices/${d.device.id}/links`)).body.split('\n').map(v=>new URL(v)),secondLink=links.find(v=>v.port==='8443'&&v.searchParams.get('type')==='xhttp');
-    const extra=JSON.parse(secondLink.searchParams.get('extra'));assert.equal(extra.path,'/second-node');assert.equal(extra.uplinkHTTPMethod,'POST');
+    assert.equal((await f.s.call('/devices/00000000-0000-4000-8000-000000000000/links')).status,404);
   }finally{await f.s.close();}
 });
 

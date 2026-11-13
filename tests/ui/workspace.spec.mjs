@@ -74,10 +74,14 @@ test('node search, selection, ordering and Agent enrollment', async ({ page, pan
 test('editor selectors, nested dialogs and operation jobs work end to end', async ({ page, panel, press, isMobile }) => {
   await login(page, panel, press);
   const editor = await openEditor(page, press);
-  await choose(page, press, editor.getByLabel('IPv4 来源'), '自动检测公网 IP');
+  await expect(editor.getByLabel('IPv4 来源')).toBeHidden();
+  await press(editor.getByRole('button', { name: '节点信息', exact: true }));
+  const ipv4Source=editor.getByRole('radiogroup',{name:'IPv4 来源'});
+  await press(ipv4Source.getByText('自动检测',{exact:true}));
   await expect(editor.getByLabel('IPv4 手动覆盖')).toBeHidden();
-  await choose(page, press, editor.getByLabel('IPv4 来源'), '手动 IP / 域名（NAT / DDNS）');
+  await press(ipv4Source.getByText('手动指定',{exact:true}));
   await expect(editor.getByLabel('IPv4 手动覆盖')).toBeVisible();
+  await press(editor.getByRole('button', { name: '节点信息', exact: true }));
   await press(editor.getByRole('button', { name: '订阅名称', exact: true }));
   const names = page.getByRole('dialog', { name: `统一订阅名称 · ${nodeName}` });
   await names.getByLabel('订阅基础名称').fill('统一测试名');
@@ -98,7 +102,7 @@ test('editor selectors, nested dialogs and operation jobs work end to end', asyn
   await panel.completeJob('relay-entry-keygen', JSON.stringify({ encryption: 'fixture-encryption', decryption: 'fixture-decryption' }));
   await expect(keygen).toBeHidden({ timeout: 10_000 });
   await expect(editor.getByText('独立加密参数已就绪')).toBeVisible();
-  await choose(page, press, editor.getByLabel('互联角色'), '独立节点（移除互联）');
+  await choose(page, press, editor.getByLabel('互联角色'), '独立节点');
   await expect(nat).toBeHidden();
 
   await press(editor.getByRole('tab', { name: '高级', exact: true }));
@@ -154,6 +158,14 @@ test('device authorization choices, key generation and H2 settings persist', asy
   await press(window.getByRole('button', { name: '保存窗口设置' }));
   await expect(window).toBeHidden();
   expect(Object.values((await panel.system.call(`/devices/${id}/download-windows`)).body.windows)).toEqual([12 * 1024 * 1024]);
+  await expect(page.getByRole('button',{name:'删除设备',exact:true})).toHaveCount(0);
+  await press(page.getByRole('button',{name:'撤销授权',exact:true}));
+  await press(page.getByRole('button',{name:'删除设备',exact:true}));
+  const deletion=page.getByRole('dialog',{name:'删除已撤销设备'});
+  await expect(deletion.getByText(/测试手机/)).toBeVisible();
+  await press(deletion.getByRole('button',{name:'永久删除'}));
+  await expect(page.getByText('测试手机',{exact:true})).toBeHidden();
+  expect((await panel.system.call('/devices')).body).toEqual([]);
   await expectNoOverflow(page.locator('html'));
 });
 
@@ -178,4 +190,27 @@ test('security forms, encrypted backup download and documentation tabs', async (
     await expect(page.getByRole('tabpanel', { name: title }).getByRole('heading', { level: 1 })).toBeVisible();
     await expectNoOverflow(page.locator('html'));
   }
+});
+
+test('NAT IPv4 entry can be selected and saved for a direct exit',async({page,panel,press})=>{
+  const nat=panel.secondary,natConfig={
+    role:'landing',relay_enabled:false,landing_ip:nat.ipv4,entry_listen_port:25555,
+    entry_uuid:'00000000-0000-4000-8000-000000000002',
+    entry_encryption:'mlkem768x25519plus.random.0rtt.test',entry_decryption:'mlkem768x25519plus.random.600s.test'
+  };
+  const target=panel.system.store.get('node',nat.id);
+  target.applied={files:{'relay.json':natConfig}};
+  panel.system.store.put('node',nat.id,target);
+  await login(page,panel,press);
+  const editor=await openEditor(page,press);
+  await press(editor.getByRole('tab',{name:'线路 / 落地'}));
+  await expect(editor.getByLabel('流量出口')).toHaveValue('本机直出');
+  await choose(page,press,editor.getByLabel('IPv4 接入'),secondNodeName);
+  await expect(editor.getByText(`IPv4　客户端 → ${secondNodeName} → 线路机 → Internet`)).toBeVisible();
+  await expect(editor.getByText('IPv6　客户端 → 线路机 → Internet')).toBeVisible();
+  await press(editor.getByRole('tab',{name:'基础参数'}));
+  await press(editor.getByRole('button',{name:'保存草稿',exact:true}));
+  await expect.poll(()=>panel.system.store.get('node',panel.node.id).draft.files['relay.json']).toEqual({version:1,role:'none',nat_entries:{direct:{nodeId:nat.id}}});
+  await press(editor.getByRole('tab',{name:'线路 / 落地'}));
+  await expect(editor.getByLabel('IPv4 接入')).toHaveValue(secondNodeName);
 });

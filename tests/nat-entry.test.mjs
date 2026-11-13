@@ -2,8 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {fixtureBundle,testSystem} from './helpers.mjs';
+import {resolveLinkedAddresses} from '../shared/addresses.mjs';
 import * as age from 'age-encryption';
-import {compileDevices,deviceProviderProxies,providerProxies,patchRouting,readSettings,patchSettings,deviceUuid,relaySchema,natEntryClients,vlessLink,providerNameEntries} from '../shared/config.mjs';
+import {compileDevices,deviceProviderProxies,providerProxies,patchRouting,readSettings,patchSettings,deviceUuid,relaySchema,natEntryClients,providerNameEntries} from '../shared/config.mjs';
 
 const master='nat-entry-test-master';
 function topology(){
@@ -36,7 +37,6 @@ test('both split directions use NAT only for IPv4, and TFO is disabled on the en
     assert.equal(guard.tfo,false);
     if(reverse){assert.equal(split['dialer-proxy'],undefined);assert.equal(split['xhttp-opts']['download-settings']['dialer-proxy'],guard.name);}
     else{assert.equal(split['dialer-proxy'],guard.name);assert.equal(split['xhttp-opts']['download-settings']['dialer-proxy'],'');}
-    assert.throws(()=>vlessLink(split,s),/单条 VLESS/);
   }
 });
 test('managed entry identities are device-specific, published after both deployments, and removed on revoke',()=>{
@@ -58,13 +58,14 @@ test('direct NAT subscriptions never publish the shared script credential before
   assert.deepEqual(deviceProviderProxies([target],{...device,epoch:randomUUID()},master),[]);
 });
 
-test('Agent lifecycle synchronizes linked NAT grants, gates subscription and removes revoked clients',async()=>{
+test('Agent lifecycle gates independent NAT grants and deletes revoked clients after a late deployment',async()=>{
   const s=await testSystem();try{
     await s.login();
     const create=async name=>(await s.call('/nodes','POST',{name,ipv4:'8.8.8.8',ipv6:'2606:4700::1111'})).body;
     const target=await create('NAT'),source=await create('Line'),f=topology();
-    f.source.applied.files['relay.json'].landings[0].nodeId=target.node.id;
-    const bundles=new Map([[target.node.id,f.target.applied],[source.node.id,f.source.applied]]);
+    const natOnly=patchRouting(f.target.applied,{relay:{...f.relay,relay_enabled:false}});
+    const line=patchRouting(f.source.applied,{relay:{role:'none',nat_entries:{direct:{nodeId:target.node.id}}}});
+    const bundles=new Map([[target.node.id,natOnly],[source.node.id,line]]);
     const headers=n=>({'Content-Type':'application/json','X-Node-ID':n.node.id,Authorization:'Bearer '+n.agentToken});
     const poll=async n=>{
       const r=await fetch(s.urls[2]+'/v1/agent/poll',{method:'POST',headers:headers(n),body:JSON.stringify({bundle:bundles.get(n.node.id),report:{}})});
@@ -75,7 +76,7 @@ test('Agent lifecycle synchronizes linked NAT grants, gates subscription and rem
       const r=await fetch(s.urls[2]+`/v1/agent/jobs/${j.id}/result`,{method:'POST',headers:headers(n),body:JSON.stringify({ok:true,lease:j.lease,bundle:j.payload.bundle})});assert.equal(r.status,200);
     };
     for(const n of [target,source]){const j=await poll(n);if(j)await finish(n,j);}
-    const identity=await age.generateIdentity(),d=(await s.call('/devices','POST',{name:'Laptop',publicKey:await age.identityToRecipient(identity),grants:[{nodeId:source.node.id,routes:['1'],modes:['split']}]})).body;
+    const identity=await age.generateIdentity(),d=(await s.call('/devices','POST',{name:'Laptop',publicKey:await age.identityToRecipient(identity),grants:[{nodeId:source.node.id,routes:['direct'],modes:['split']}]})).body;
     const sub=()=>fetch(d.url,{headers:{Authorization:'Bearer '+d.token}});
     const sourceJob=await poll(source);assert.ok(sourceJob);await finish(source,sourceJob);
     assert.equal((await sub()).status,503,'line-only deployment cannot publish an unusable NAT chain');
@@ -83,8 +84,19 @@ test('Agent lifecycle synchronizes linked NAT grants, gates subscription and rem
     assert.equal((await sub()).status,200);
     const clients=()=>bundles.get(target.node.id).files['conf/99_relay_in.json'].inbounds.find(i=>i.tag==='relay-entry-v4').settings.clients;
     assert.equal(clients().filter(c=>c.email?.startsWith('panel-relay-')).length,1);
+    assert.equal((await s.call(`/devices/${d.device.id}`,'DELETE')).status,409);
+    const rotate=await s.call(`/devices/${d.device.id}/rotate`,'POST',{rotateUuid:true});
+    assert.equal(rotate.status,200);
+    const lateSource=await poll(source),lateTarget=await poll(target);
+    assert.ok(lateSource);assert.ok(lateTarget);
     await s.call(`/devices/${d.device.id}/revoke`,'POST',{});
-    const revoke=await poll(target);assert.ok(revoke);await finish(target,revoke);
+    assert.equal((await s.call(`/devices/${d.device.id}`,'DELETE')).status,200);
+    assert.equal((await s.call('/devices')).body.length,0);
+    await finish(source,lateSource);await finish(target,lateTarget);
+    const cleanSource=await poll(source),cleanTarget=await poll(target);
+    assert.ok(cleanSource);assert.ok(cleanTarget);
+    await finish(source,cleanSource);await finish(target,cleanTarget);
+    assert.ok(!JSON.stringify(bundles.get(source.node.id)).includes(d.device.id));
     assert.ok(!clients().some(c=>c.email?.startsWith('panel-relay-')));
     assert.equal((await sub()).status,401);
     assert.equal(await poll(target),null,'unchanged heartbeat must not queue another deployment');
@@ -113,4 +125,39 @@ test('NAT transport exception is limited to granted users, line IPs, inbound and
  const f=topology(),bundle=compileDevices(f.target.applied,f.target,[f.device],master,f.nodes),rules=bundle.files['config.json'].routing.rules;
  assert.deepEqual(rules[0].ip,['geoip:private']);const rule=rules.find(r=>r.inboundTag?.includes('relay-entry-v4')&&r.ip);assert.ok(rule);assert.deepEqual(rule.ip,[f.source.ipv4,f.source.ipv6]);const sniRule=rules.find(r=>r.inboundTag?.includes('relay-entry-v4')&&r.domain);assert.deepEqual(sniRule.domain,[...new Set([readSettings(f.source.applied).sni4,readSettings(f.source.applied).sni6])].map(s=>'full:'+s));assert.deepEqual(sniRule.user,rule.user);assert.equal(rule.port,'443');assert.equal(rule.network,'tcp');assert.deepEqual(rule.user,natEntryClients(f.target.id,f.nodes,[f.device],master).map(c=>c.email));
  const revoked=compileDevices(bundle,f.target,[{...f.device,revoked:true}],master,f.nodes);assert.ok(!revoked.files['config.json'].routing.rules.some(r=>r.inboundTag?.includes('relay-entry-v4')));
+});
+
+test('entry-only NAT supports both exits and Vision without publishing before the target deploys',()=>{
+  const {source,target,relay,landing,device,nodes}=topology();
+  const targetBundle=patchRouting(target.applied,{relay:{...relay,relay_enabled:false}});
+  target.applied=target.observed=targetBundle;
+  assert.deepEqual(targetBundle.files['conf/99_relay_in.json'].inbounds.map(i=>i.tag),['relay-entry-v4']);
+  device.grants[0].routes=['direct','1'];
+  const config={role:'line',landings:[{...landing,nodeId:undefined,entry_enabled:false}],failover:{enabled:false,interval:'60s',order:[]},nat_entries:{}};
+  for(const selected of [false,true])for(const reverse of [false,true]){
+    config.nat_entries={direct:selected?{nodeId:target.id}:null,'1':selected?{nodeId:target.id}:null};
+    let sourceBundle=patchRouting(source.applied,{relay:config});
+    sourceBundle=patchSettings(sourceBundle,{...readSettings(sourceBundle),v6Uplink:reverse});
+    source.applied=source.observed=compileDevices(resolveLinkedAddresses(sourceBundle,nodes),source,[device],master);
+    target.applied=target.observed=targetBundle;
+    assert.equal(deviceProviderProxies(nodes,device,master).length,selected?0:6);
+    target.applied=target.observed=compileDevices(targetBundle,target,[device],master,nodes);
+    for(const exit of ['direct','1']){
+      const proxies=deviceProviderProxies(nodes,device,master),id=deviceUuid(master,device,source.id,exit);
+      const vision=proxies.find(p=>p.uuid===id&&p.flow==='xtls-rprx-vision');
+      assert.equal(vision.server,source.ipv4);
+      const split=proxies.find(p=>p.uuid===id&&p['xhttp-opts']?.['download-settings']);
+      const dialer=reverse?split['xhttp-opts']['download-settings']['dialer-proxy']:split['dialer-proxy'];
+      assert.equal(Boolean(dialer),selected);
+      assert.equal(vision['dialer-proxy'],dialer);
+      if(selected)assert.equal(proxies.find(p=>p.name===dialer).server,target.ipv4);
+      const rule=source.applied.files['config.json'].routing.rules.find(r=>r.user?.includes(`panel-${device.id}-${exit}`));
+      assert.equal(rule?.outboundTag,exit==='direct'?undefined:'relay-out-1');
+    }
+  }
+  target.applied=target.observed=patchRouting(targetBundle,{relay:{role:'none'}});
+  const unresolved=resolveLinkedAddresses(source.applied,nodes);
+  assert.deepEqual(unresolved.files['relay.json'].nat_entries.direct,{nodeId:target.id});
+  assert.deepEqual(deviceProviderProxies(nodes,device,master),[]);
+  assert.throws(()=>resolveLinkedAddresses(source.applied,nodes,{strictNat:true}),/尚未就绪/);
 });

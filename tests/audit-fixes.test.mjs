@@ -6,7 +6,7 @@ import {writeFileSync,unlinkSync} from 'node:fs';
 import path from 'node:path';
 import * as age from 'age-encryption';
 import {testSystem,fixtureBundle,settings} from './helpers.mjs';
-import {compileDevices,patchRouting,patchSettings,providerProxies,providerLinks,newBundle,readSettings,hashBundle} from '../shared/config.mjs';
+import {compileDevices,patchRouting,patchSettings,providerProxies,newBundle,readSettings,hashBundle} from '../shared/config.mjs';
 
 const master='a'.repeat(64),node={id:randomUUID(),name:'audit',ipv4:'203.0.113.1',ipv6:'2001:db8::1'};
 const device=()=>({id:randomUUID(),epoch:randomUUID(),grants:[{nodeId:node.id,routes:['1'],modes:['split','single4','vision4']}]});
@@ -30,8 +30,8 @@ test('empty native XHTTP defaults and null XMUX export without touching unrelate
     f.inbounds.push(...structuredClone(extra));const d=device();d.grants[0].routes=['direct'];
     b=patchRouting(b,{relay:relay()});b=compileDevices(b,node,[d],master);
     assert.deepEqual(b.files['conf/VLESS-443.json'].inbounds.slice(3),extra);
-    assert.equal(providerProxies(node,b,d,master).length,3);assert.equal(providerLinks(node,b,d,master).length,3);
-    assert.ok(!providerLinks(node,b,d,master).some(link=>link.includes('mode=undefined')));
+    assert.equal(providerProxies(node,b,d,master).length,3);
+    assert.ok(providerProxies(node,b,d,master).every(p=>p['xhttp-opts']?.mode===undefined));
     assert.equal(readSettings(b).path,xhttp?.path??'/');
     const edited=patchSettings(b,readSettings(b));assert.deepEqual(edited.files['conf/VLESS-443.json'].inbounds.slice(3),extra);
   }

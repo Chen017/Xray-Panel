@@ -3,8 +3,8 @@ import {z} from 'zod';
 import {readSettings} from '../shared/config.mjs';
 import {isLanding,isPrivateLanding,hasPublicEntry,relayTargets} from './relay-monitoring.mjs';
 const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
-export const monitoringSchema=z.object({enabled:z.boolean(),botToken:z.string().regex(/^\d{5,20}:[A-Za-z0-9_-]{20,100}$/).optional(),clearToken:z.boolean().optional(),chatId:z.string().regex(/^-?\d{1,20}$/).or(z.literal('')),threadId:z.number().int().min(1).optional().nullable(),interval:z.number().int().min(60).max(3600),failures:z.number().int().min(2).max(10),recoveries:z.number().int().min(2).max(10)});
-export const monitoringDefaults={enabled:false,chatId:'',threadId:null,interval:300,failures:3,recoveries:2};
+export const monitoringSchema=z.object({enabled:z.boolean(),sniFamilyFallback:z.boolean().optional(),botToken:z.string().regex(/^\d{5,20}:[A-Za-z0-9_-]{20,100}$/).optional(),clearToken:z.boolean().optional(),chatId:z.string().regex(/^-?\d{1,20}$/).or(z.literal('')),threadId:z.number().int().min(1).optional().nullable(),interval:z.number().int().min(60).max(3600),failures:z.number().int().min(2).max(10),recoveries:z.number().int().min(2).max(10)});
+export const monitoringDefaults={enabled:false,sniFamilyFallback:false,chatId:'',threadId:null,interval:300,failures:3,recoveries:2};
 
 // Token is necessarily part of Telegram's official URL format. Never log the URL,
 // response description, thrown fetch error or arbitrary response body.
@@ -26,16 +26,20 @@ export async function sendTelegram(settings,text,fetchImpl=fetch){
 
 export function createMonitoring(store,{clock=Date.now,fetchImpl=fetch,paused=()=>false}={}){
   let sending=false;
-  const settings=()=>{const saved=store.get('system','monitoring')??{};return {...monitoringDefaults,...Object.fromEntries([...Object.keys(monitoringDefaults),'botToken','generation'].filter(k=>saved[k]!==undefined).map(k=>[k,saved[k]]))};};
+  const settings=()=>{const saved=store.get('system','monitoring')??{};return {...monitoringDefaults,...Object.fromEntries([...Object.keys(monitoringDefaults),'botToken','generation','sniGeneration'].filter(k=>saved[k]!==undefined).map(k=>[k,saved[k]]))};};
   const configHash=cfg=>hash(['relay-network-v3',cfg.enabled,cfg.failures,cfg.recoveries,cfg.interval,cfg.generation]);
   function publicSettings(){const {botToken,...safe}=settings();return {...safe,hasToken:!!botToken};}
   function save(input){
     const patch=monitoringSchema.parse(input),previous=settings();
-    const cfg={...previous,...patch,generation:randomUUID()};if(patch.clearToken)delete cfg.botToken;delete cfg.clearToken;
+    const cfg={...previous,...patch};if(patch.clearToken)delete cfg.botToken;delete cfg.clearToken;
+    const sniChanged=cfg.sniFamilyFallback!==previous.sniFamilyFallback;
+    const changed=!sniChanged||Object.keys(cfg).some(key=>key!=='sniFamilyFallback'&&cfg[key]!==previous[key])||cfg.botToken!==previous.botToken;
+    if(changed)cfg.generation=randomUUID();
+    if(sniChanged)cfg.sniGeneration=randomUUID();
     if(cfg.enabled&&(!cfg.botToken||!cfg.chatId))throw Error('启用前请填写 Bot Token 和 Chat ID');
     store.put('system','monitoring',cfg);
     // Do not send old alerts into a newly configured chat, or resume stale samples.
-    for(const item of store.list('notification'))if(['pending','sending'].includes(item.status))store.put('notification',item.id,{...item,status:'superseded'});
+    for(const item of store.list('notification'))if(changed&&['pending','sending'].includes(item.status))store.put('notification',item.id,{...item,status:'superseded'});
     store.audit('monitoring.updated','system');return publicSettings();
   }
   function targetsFor(probe,cfg,nodes){
@@ -48,7 +52,7 @@ export function createMonitoring(store,{clock=Date.now,fetchImpl=fetch,paused=()
       let s;try{s=readSettings(b);}catch{}
       for(const [key,family] of [['ipv4',4],['ipv6',6]]){
         if(!n[key])continue;
-        if(n.id===probe.id&&s)targets.push({kind:'sni',nodeId:n.id,host:s[family===4?'sni4':'sni6'],port:443,family,region:'self'});
+        if(s){const fallback=cfg.sniFamilyFallback&&probe.report?.sniFamilyFallback===true;targets.push({kind:'sni',nodeId:n.id,host:s[family===4?'sni4':'sni6'],port:443,family,region:'self',...(cfg.sniGeneration&&probe.report?.sniFamilyFallback===true?{scope:cfg.sniGeneration}:{}),...(fallback?{allowFamilyFallback:true}:{})});}
       }
     }
     targets.push(...relayTargets(probe,nodes));
@@ -113,6 +117,8 @@ export function createMonitoring(store,{clock=Date.now,fetchImpl=fetch,paused=()
       if(record.signature!==p.signature){record={...record,signature:p.signature,samples:{},active:false,alertDelivered:false};}
       const previous=record.samples[probe.id];const adjacent=previous&&clock()-previous.at<=(previous.periodMs??cfg.interval*1000)*1.5;
       record.samples[probe.id]={at:clock(),periodMs:p.periodMs,region:target.region,ok:r.ok,code,count:adjacent&&(target.kind==='tcp'?previous.ok===r.ok:previous.code===code)?previous.count+1:1};record.updatedAt=clock();record.lastCode=code;
+      if(target.allowFamilyFallback&&r.ok&&code==='ok'&&r.resolvedFamily===(target.family===4?6:4))record.resolvedFamily=r.resolvedFamily;
+      else delete record.resolvedFamily;
       const {verdict,samples}=assessment(record,cfg);
       record.assessment=verdict===null?'insufficient':verdict?'alert':'reachable';
       record.evidence=samples.map(s=>({region:s.region,ok:s.ok,count:s.count,at:s.at}));
@@ -127,7 +133,7 @@ export function createMonitoring(store,{clock=Date.now,fetchImpl=fetch,paused=()
   function status(){const cfg=settings();return {settings:publicSettings(),incidents:store.list('monitor').filter(r=>['sni','connectivity','tcp','overseas'].includes(r.kind)).map(r=>{
     const {verdict,samples}=assessment(r,cfg),stale=r.signature!==configHash(cfg)||!samples.length;
     return {...r,current:targetCurrent(r,cfg),stale,assessment:stale||verdict===null?'insufficient':verdict?'alert':'reachable',evidence:samples.map(s=>({region:s.region,ok:s.ok,count:s.count,at:s.at}))};
-  }).sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0)).slice(0,200),notifications:store.list('notification').sort((a,b)=>b.createdAt-a.createdAt).slice(0,50).map(({text,destinationHash,...safe})=>safe),notice:'三项独立告警：中转 → 落地、落地 → 中转、落地海外连通；任一项连续失败达到设置轮数即通知。公开 NAT 入口同时检测国内三网 / Cloudflare；纯互联落地仅检测海外。公开入口需更新 Agent；本机出站检测不能单独确认入站被墙，TCP 可达也不代表完整代理链路可用。',upgradeRequired:store.list('node').filter(n=>n.enabled&&(![3,4].includes(n.report?.monitorProtocol)||hasPublicEntry(n)&&n.report?.monitorProtocol!==4)).map(n=>({id:n.id,name:n.name}))};}
+  }).sort((a,b)=>(b.updatedAt??0)-(a.updatedAt??0)).slice(0,200),notifications:store.list('notification').sort((a,b)=>b.createdAt-a.createdAt).slice(0,50).map(({text,destinationHash,...safe})=>safe),notice:'三项独立告警：中转 → 落地、落地 → 中转、落地海外连通；任一项连续失败达到设置轮数即通知。公开 NAT 入口同时检测国内三网 / Cloudflare；纯互联落地仅检测海外。公开入口需更新 Agent；本机出站检测不能单独确认入站被墙，TCP 可达也不代表完整代理链路可用。',sniUpgradeRequired:cfg.sniFamilyFallback?store.list('node').filter(n=>n.enabled&&n.report?.sniFamilyFallback!==true&&targetsFor(n,cfg,[n]).some(t=>t.kind==='sni')).map(({id,name})=>({id,name})):[],upgradeRequired:store.list('node').filter(n=>n.enabled&&(![3,4].includes(n.report?.monitorProtocol)||hasPublicEntry(n)&&n.report?.monitorProtocol!==4)).map(n=>({id:n.id,name:n.name}))};}
   async function test(){const cfg=settings();if(!cfg.botToken||!cfg.chatId)throw Error('请先保存 Bot Token 和 Chat ID');return sendTelegram(cfg,'Xray Panel 测试通知：Telegram 接口已收到此消息。',fetchImpl);}
   async function drain(){
     if(sending||paused())return;sending=true;

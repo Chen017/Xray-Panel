@@ -5,7 +5,7 @@ import {readFileSync} from 'node:fs';
 import * as age from 'age-encryption';
 import YAML from 'yaml';
 import {fixtureBundle,settings,testSystem} from './helpers.mjs';
-import {compileDevices,hashBundle,newBundle,patchRouting,providerNameEntries,providerProxies,providerLinks,subscriptionNameKey,deviceProviderNameEntries,deviceProviderProxies,deviceProviderLinks} from '../shared/config.mjs';
+import {compileDevices,hashBundle,newBundle,patchRouting,providerNameEntries,providerProxies,subscriptionNameKey,deviceProviderNameEntries,deviceProviderProxies} from '../shared/config.mjs';
 import {migrateSubscriptionNames} from '../server/subscription-names.mjs';
 import {Store} from '../server/store.mjs';
 
@@ -30,15 +30,15 @@ test('node names distinguish files, routes and modes and are shared across ident
  const base=fixtureBundle(),second=settings();second.port=8443;base.files['conf/VLESS-8443.json']=newBundle(second).files['conf/VLESS-8443.json'];
  const applied=compileDevices(base,node,[d,other],master),entries=providerNameEntries(node,applied,d,master);assert.equal(entries.length,4);assert.equal(new Set(entries.map(e=>e.name)).size,4);assert.ok(entries.every(e=>e.name.startsWith('统一基础名')));
  const e=entries.find(e=>e.file==='conf/VLESS-8443.json'&&e.mode==='vision4');node.subscriptionNames={[e.key]:'任意完整名称 🐟'};d.subscriptionNames={[e.key]:'旧设备覆盖'};
- for(const device of [d,other]){assert.equal(providerNameEntries(node,applied,device,master).find(x=>x.key===e.key).name,'任意完整名称 🐟');assert.ok(providerLinks(node,applied,device,master).some(l=>decodeURIComponent(new URL(l).hash.slice(1))==='任意完整名称 🐟'));}
+ for(const device of [d,other]){assert.equal(providerNameEntries(node,applied,device,master).find(x=>x.key===e.key).name,'任意完整名称 🐟');assert.ok(providerProxies(node,applied,device,master).some(p=>p.name==='任意完整名称 🐟'));}
  assert.equal(subscriptionNameKey(node.id,e.file,e.route,e.mode),e.key);const reduced=structuredClone(applied);delete reduced.files['conf/VLESS-443.json'];assert.equal(providerNameEntries(node,reduced,d,master).find(x=>x.key===e.key).name,'任意完整名称 🐟');
 });
 
-test('node rename updates two encrypted subscriptions, previews and VLESS while preserving credentials and deployment',async()=>{
+test('node rename updates two encrypted subscriptions and previews while preserving credentials and deployment',async()=>{
  const f=await fixture();try{const catalog=await f.nodeNames(),e=catalog.entries.find(e=>e.mode==='single4'),original=f.s.store.get('node',f.nodeId),devices=f.s.store.list('device'),jobs=f.s.store.list('job').length,before=await f.subscription();
  const sort=await f.names();
  assert.equal((await f.rename({revision:0,subscriptionName:'统一东京',names:{[e.key]:'香港家宽 "🐟"'}})).status,200);
- for(let i=0;i<2;i++){const out=await f.subscription(i);assert.ok(out.some(p=>p.name==='香港家宽 "🐟"'));assert.ok(out.filter(p=>p.name!=='香港家宽 "🐟"').every(p=>p.name.startsWith('统一东京')));const id=f.devices[i].device.id;assert.deepEqual(YAML.parse((await f.s.call(`/devices/${id}/preview`)).body).proxies,out);assert.deepEqual((await f.s.call(`/devices/${id}/links`)).body.split('\n').map(l=>decodeURIComponent(new URL(l).hash.slice(1))),out.map(p=>p.name));}
+ for(let i=0;i<2;i++){const out=await f.subscription(i);assert.ok(out.some(p=>p.name==='香港家宽 "🐟"'));assert.ok(out.filter(p=>p.name!=='香港家宽 "🐟"').every(p=>p.name.startsWith('统一东京')));const id=f.devices[i].device.id;assert.deepEqual(YAML.parse((await f.s.call(`/devices/${id}/preview`)).body).proxies,out);}
  assert.deepEqual((await f.names()).entries.map(e=>e.key),sort.entries.map(e=>e.key));assert.deepEqual((await f.subscription()).map(p=>p.uuid).sort(),before.map(p=>p.uuid).sort());
  const n=f.s.store.get('node',f.nodeId);assert.equal(hashBundle(n.applied),hashBundle(original.applied));assert.equal(n.syncRevision,original.syncRevision);assert.equal(f.s.store.list('job').length,jobs);for(const d of devices){const saved=f.s.store.get('device',d.id);assert.equal(saved.tokenHash,d.tokenHash);assert.equal(saved.epoch,d.epoch);}
  const old=await f.save({revision:1,names:{[e.key]:'旧窗口尝试覆盖'}});assert.equal(old.status,409);assert.equal((await f.nodeNames()).entries.find(x=>x.key===e.key).name,'香港家宽 "🐟"');

@@ -15,7 +15,7 @@ firewall_sync() {
     [[ ! -f "$firewall_ports_file" ]] || state=$(cat "$firewall_ports_file")
     if [[ -f "$is_relay_state_file" ]]; then
         # A non-whitespace separator preserves an empty peer field.
-        IFS='|' read -r role peer relay_port entry_port < <(jq -r '[.role // "", .peer_ip // "", (.listen_port // 0 | tostring), (.entry_listen_port // 0 | tostring)] | join("|")' "$is_relay_state_file")
+        IFS='|' read -r role peer relay_port entry_port < <(jq -r '[.role // "", .peer_ip // "", (if .relay_enabled == false then "0" else (.listen_port // 0 | tostring) end), (.entry_listen_port // 0 | tostring)] | join("|")' "$is_relay_state_file")
     fi
     if ! firewall_tool_available iptables; then
         if [[ $role == landing ]]; then
@@ -89,7 +89,7 @@ firewall_sync() {
 firewall_set_port() {
     local action="$1" p="$2" state='{"open":[],"closed":[]}'
     [[ "$p" =~ ^[0-9]{1,5}$ ]] && (( 10#$p > 0 && 10#$p <= 65535 )) || return 1
-    if [[ $(relay_get_role) == landing ]] && jq -e --argjson p "$((10#$p))" '.listen_port == $p or (.entry_listen_port // 0) == $p' "$is_relay_state_file" >/dev/null 2>&1; then
+    if [[ $(relay_get_role) == landing ]] && jq -e --argjson p "$((10#$p))" '(.relay_enabled != false and .listen_port == $p) or (.entry_listen_port // 0) == $p' "$is_relay_state_file" >/dev/null 2>&1; then
         _fail "该端口用于落地互联，请在互联菜单调整或移除；来源限制由脚本维护"
         return 1
     fi

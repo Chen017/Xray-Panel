@@ -8,7 +8,7 @@ import net from 'node:net';
 import {spawn,spawnSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import YAML from 'yaml';
-import {keypair,migrateNodeEntrypoints} from '../shared/config.mjs';
+import {compileDevices,defaultXhttp,deviceProviderProxies,keypair,migrateNodeEntrypoints,newBundle,patchRouting} from '../shared/config.mjs';
 
 const windows=process.platform==='win32';
 const xray=path.resolve(process.env.XRAY_NATIVE_BIN??`../Xray-Script/Xray/.test-tools/v26.3.27/xray${windows?'.exe':''}`);
@@ -43,7 +43,7 @@ try{
   const generated=spawnSync(openssl,['req','-x509','-newkey','rsa:2048','-nodes','-keyout',key,'-out',cert,'-days','1','-subj','/CN=localhost'],{encoding:'utf8',windowsHide:true});
   assert.equal(generated.status,0,generated.stderr);
   const payload='NAT-SPLIT-COMPLETE\n'.repeat(32768);
-  origin=http.createServer((_,r)=>r.end(payload));
+  origin=http.createServer((req,r)=>r.end(req.url==='/exit'?req.socket.remoteAddress:payload));
   tlsTarget=https.createServer({key:fs.readFileSync(key),cert:fs.readFileSync(cert),minVersion:'TLSv1.3',ALPNProtocols:['h2','http/1.1']},(_,r)=>r.end(payload));
   const httpPort=await listen(origin),tlsPort=await listen(tlsTarget),linePort=await free('::'),inner=await free(),entry=await free(),mixed=await free(),controller=await free();
   const pair=keypair(),id=randomUUID(),entryId=randomUUID();
@@ -100,6 +100,75 @@ try{
   }
   console.log('PASS persistent 0-RTT client recovers after Xray restart and keeps returning complete content');
   console.log('PASS migrated random-encryption entry, IPv4 upload/IPv6 download and reverse direction return complete HTTP/HTTPS content');
+
+  await stop(serverWorker);await stop(clientWorker);
+  // Each path uses the actual Panel compiler and the encrypted provider's node list.
+  // Distinct egress source IPs let the origin distinguish line from landing.
+  const relayPort=await free(),relayId=randomUUID(),sourceId=randomUUID(),natId=randomUUID();
+  const master='test-nat-independent';
+  const source={id:sourceId,name:'Line',ipv4:'127.0.0.1',ipv6:'::1',enabled:true};
+  const target={id:natId,name:'Entrance',ipv4:'127.0.0.1',enabled:true};
+  const device={id:randomUUID(),epoch:randomUUID(),grants:[{nodeId:sourceId,routes:['direct','1','2'],modes:['split','single4','vision4']}]};
+  const relay={role:'landing',relay_enabled:false,landing_ip:'127.0.0.1',entry_listen_port:entry,entry_uuid:entryId,entry_decryption:dec,entry_encryption:enc};
+  const interconnect={landing_ip:'127.0.0.1',landing_port:relayPort,transport_uuid:relayId,client_uuid:randomUUID(),encryption:value('encryption')};
+  const nat={nodeId:natId,address:'127.0.0.1',port:entry,uuid:entryId,encryption:enc};
+  const lineBase=newBundle({port:443,uuid:id,...pair,sni4:'localhost.test',sni6:'localhost.test',shortIds4:['12345678'],shortIds6:['12345678'],path:'/test',v6Uplink:false,outbound:'UseIPv4v6',logLevel:'warning',xhttp:{...defaultXhttp(),host:'localhost'}});
+  const settingsFile=lineBase.files['conf/VLESS-443.json'];
+  for(const [idx,inbound] of settingsFile.inbounds.entries()){
+    if(idx<2){
+      inbound.port=linePort;
+      inbound.streamSettings.realitySettings.dest=`127.0.0.1:${tlsPort}`;
+      inbound.streamSettings.realitySettings.serverNames=['localhost'];
+      inbound.settings.fallbacks=[{dest:inner}];
+    }else{
+      inbound.tag='test-xhttp';inbound.listen='127.0.0.1';inbound.port=inner;
+      inbound.streamSettings.xhttpSettings={path:'/test',mode:'stream-up'};
+    }
+  }
+  const makeLine=(reverse,withDirectNat)=>{
+    const base=patchRouting(lineBase,{relay:{role:'line',landings:['1','2'].map(id=>({...interconnect,id,name:`Exit ${id}`,client_uuid:randomUUID()})),nat_entries:{'2':nat},failover:{enabled:false,order:[],interval:'60s'}}});
+    if(reverse)base.files['conf/is_v6_uplink']=true;
+    if(withDirectNat)base.files['relay.json'].nat_entries.direct=nat;
+    return compileDevices(base,source,[device],master);
+  };
+  const asServer=(bundle,inbounds)=>{
+    const config=bundle.files['config.json'];
+    // The production private-IP refusal is verified separately. This fixture
+    // uses loopback for the destination, relay, and REALITY camouflage target.
+    return {...config,log:{loglevel:'warning'},inbounds,routing:{...config.routing,rules:config.routing.rules.filter(r=>r.user?.length)}};
+  };
+  const targetBase=patchRouting(lineBase,{relay});
+  delete targetBase.files['conf/VLESS-443.json'];
+  const relayBundle=patchRouting(lineBase,{relay:{role:'landing',landing_ip:'127.0.0.1',listen_port:relayPort,external_port:relayPort,transport_uuid:relayId,encryption:value('encryption'),decryption:value('decryption'),peer_ip:''}});
+  const relayInbound=relayBundle.files['conf/99_relay_in.json'].inbounds[0];
+  const targetFile=path.join(dir,'entrance.json');
+  for(const reverse of [false,true])for(const withDirectNat of [false,true]){
+    source.applied=source.observed=makeLine(reverse,withDirectNat);
+    target.applied=target.observed=compileDevices(targetBase,target,[device],master,[source,target]);
+    const lineConfig=asServer(source.applied,source.applied.files['conf/VLESS-443.json'].inbounds);
+    const targetConfig=asServer(target.applied,[...target.applied.files['conf/99_relay_in.json'].inbounds,relayInbound]);
+    targetConfig.outbounds[0].sendThrough='127.0.0.2';
+    targetConfig.routing.rules.push({type:'field',inboundTag:['relay-entry-v4'],outboundTag:'block'});
+    fs.writeFileSync(serverFile,JSON.stringify(lineConfig));fs.writeFileSync(targetFile,JSON.stringify(targetConfig));
+    const lineWorker=start(xray,['run','-c',serverFile]),targetWorker=start(xray,['run','-c',targetFile]);
+    await ready(linePort,lineWorker);await ready(entry,targetWorker);
+    const entries=deviceProviderProxies([source,target],device,master);
+    fs.writeFileSync(clientFile,YAML.stringify({...client,'proxy-providers':{test:{type:'inline',payload:entries}}}));
+    const worker=start(mihomo,['-d',dir,'-f',clientFile]);await ready(controller,worker);
+    const assertExit=async(name,expected)=>{
+      const selected=await fetch(`http://127.0.0.1:${controller}/proxies/TEST`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+      assert.equal(selected.status,204,name);
+      const result=await run(windows?'curl.exe':'curl',['-sS','--noproxy','','--max-time','7','--proxy',`http://127.0.0.1:${mixed}`,`http://127.0.0.1:${httpPort}/exit`]);
+      assert.equal(result.out,expected,`${name}: ${result.error}`);
+    };
+    for(const mode of ['split','single4','vision4']){
+      await assertExit(`Line · 直出 · ${mode}`,'127.0.0.1');
+      await assertExit(`Line · Exit 1 · ${mode}`,'127.0.0.2');
+      await assertExit(`Line · Exit 2 · ${mode}`,'127.0.0.2');
+    }
+    await stop(worker);await stop(targetWorker);await stop(lineWorker);
+  }
+  console.log('PASS compiler-generated NAT and direct access preserve line and landing exits, including Vision and both split directions');
 }catch(error){for(const worker of children)console.error(worker.log().slice(-4000));throw error;}
 finally{
   for(const worker of children)await stop(worker);

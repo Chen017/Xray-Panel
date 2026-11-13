@@ -785,132 +785,40 @@ relay_validate_host() {
     relay_validate_ipv4 "$host" || relay_validate_domain "$host"
 }
 
-# ─── relay uri builder & parser ──────────────────────────
-relay_build_link() {
-    local t_uuid="$1"
-    local l_ip="$2"
-    local l_port="$3"
-    local enc="$4"
-    local entry_port="${5:-0}"
-    local entry_uuid="${6:-}"
-    local entry_enc="${7:-}"
-    local extra=""
-    if [[ "$entry_port" =~ ^[0-9]+$ ]] && (( entry_port >= 1 && entry_port <= 65535 )); then
-        extra="&entry_port=${entry_port}"
-        [[ -n "$entry_uuid" ]] && extra+="&entry_uuid=${entry_uuid}"
-        [[ -n "$entry_enc" ]] && extra+="&entry_enc=${entry_enc}"
-    fi
-    echo "vless://${t_uuid}@${l_ip}:${l_port}?encryption=${enc}&security=none&type=tcp&flow=xtls-rprx-vision${extra}#Xray-Relay"
+# ─── relay profile builder & parser ──────────────────────────
+relay_build_profile() {
+    jq -cn --arg host "$2" --arg port "$3" --arg uuid "$1" --arg enc "$4" \
+        --arg address "${8:-$2}" --arg entry_port "${5:-0}" --arg entry_uuid "${6:-}" --arg entry_enc "${7:-}" '
+        {version:1} +
+        (if ($port|tonumber? // 0)>0 then {relay:{address:$host,port:($port|tonumber),uuid:$uuid,encryption:$enc}} else {} end) +
+        (if ($entry_port|tonumber? // 0)>0 then {nat_ipv4:{address:$address,port:($entry_port|tonumber),uuid:$entry_uuid,encryption:$entry_enc}} else {} end)'
 }
 
-relay_parse_link() {
-    local link="$1"
-    parsed_transport_uuid=""
-    parsed_landing_ip=""
-    parsed_landing_port=""
-    parsed_encryption=""
-    parsed_entry_port=""
-    parsed_entry_uuid=""
-    parsed_entry_encryption=""
-
-    if [[ "$link" != vless://* ]]; then
-        return 1
+relay_parse_profile() {
+    local profile="$1"
+    local -a fields=()
+    (( ${#profile} <= 12000 )) || return 1
+    mapfile -t fields < <(jq -er '
+        select(type=="object" and .version==1 and (.relay or .nat_ipv4)) |
+        def clean: type=="string" and length>0 and (explode|all(.>32));
+        def fields: if .==null then ["","","",""] else
+            select(type=="object" and (.address|clean) and (.uuid|clean) and (.encryption|clean) and (.port|type=="number" and floor==.)) |
+            [.address,.port,.uuid,.encryption] end;
+        ((.relay|fields)+(.nat_ipv4|fields))[]' <<< "$profile" 2>/dev/null)
+    (( ${#fields[@]} == 8 )) || return 1
+    parsed_landing_ip=${fields[0]}; parsed_landing_port=${fields[1]}
+    parsed_transport_uuid=${fields[2]}; parsed_encryption=${fields[3]%%=*}
+    parsed_entry_address=${fields[4]}; parsed_entry_port=${fields[5]}
+    parsed_entry_uuid=${fields[6]}; parsed_entry_encryption=${fields[7]%%=*}
+    if [[ -n "$parsed_landing_ip$parsed_landing_port$parsed_transport_uuid$parsed_encryption" ]]; then
+        relay_validate_host "$parsed_landing_ip" && relay_validate_port "$parsed_landing_port" &&
+            relay_validate_uuid "$parsed_transport_uuid" && relay_validate_vless_encryption "$parsed_encryption" || return 1
     fi
-    local rest="${link#vless://}"
-    rest="${rest%%#*}"
-
-    if [[ "$rest" != *"@"* ]]; then
-        return 1
+    if [[ -n "$parsed_entry_address$parsed_entry_port$parsed_entry_uuid$parsed_entry_encryption" ]]; then
+        relay_validate_host "$parsed_entry_address" && relay_validate_port "$parsed_entry_port" &&
+            relay_validate_uuid "$parsed_entry_uuid" && relay_validate_vless_encryption "$parsed_entry_encryption" || return 1
     fi
-    local t_uuid="${rest%%@*}"
-    local host_and_query="${rest#*@}"
-
-    if [[ "$host_and_query" != *"?"* ]]; then
-        return 1
-    fi
-    local host_port="${host_and_query%%\?*}"
-    local query="${host_and_query#*\?}"
-
-    if [[ "$host_port" != *":"* ]]; then
-        return 1
-    fi
-    local l_ip="${host_port%%:*}"
-    local l_port="${host_port#*:}"
-
-    if ! relay_validate_uuid "$t_uuid"; then
-        return 1
-    fi
-    if ! relay_validate_host "$l_ip"; then
-        return 1
-    fi
-    if ! relay_validate_port "$l_port"; then
-        return 1
-    fi
-
-    local p_enc=""
-    local p_sec=""
-    local p_type=""
-    local p_flow=""
-    local p_entry_port=""
-    local p_entry_uuid=""
-    local p_entry_enc=""
-    local has_entry_port=0
-    local has_entry_uuid=0
-    local has_entry_enc=0
-    local IFS='&'
-    for param in $query; do
-        local key="${param%%=*}"
-        local val="${param#*=}"
-        case "$key" in
-        encryption) p_enc="$val" ;;
-        security) p_sec="$val" ;;
-        type) p_type="$val" ;;
-        flow) p_flow="$val" ;;
-        entry_port) has_entry_port=1; p_entry_port="$val" ;;
-        entry_uuid) has_entry_uuid=1; p_entry_uuid="$val" ;;
-        entry_enc) has_entry_enc=1; p_entry_enc="$val" ;;
-        esac
-    done
-
-    if [[ "$p_sec" != "none" ]]; then
-        return 1
-    fi
-    if [[ "$p_type" != "tcp" && "$p_type" != "raw" ]]; then
-        return 1
-    fi
-    if [[ "$p_flow" != "xtls-rprx-vision" ]]; then
-        return 1
-    fi
-    if ! relay_validate_vless_encryption "$p_enc"; then
-        return 1
-    fi
-    if (( has_entry_port )); then
-        if ! relay_validate_port "$p_entry_port"; then
-            return 1
-        fi
-        parsed_entry_port="$p_entry_port"
-    fi
-    if (( has_entry_uuid )); then
-        if ! relay_validate_uuid "$p_entry_uuid"; then
-            return 1
-        fi
-        parsed_entry_uuid="$p_entry_uuid"
-    fi
-    if (( has_entry_enc )); then
-        if ! relay_validate_vless_encryption "$p_entry_enc"; then
-            return 1
-        fi
-        parsed_entry_encryption="${p_entry_enc%%=*}"
-    fi
-    if (( has_entry_port )) && { (( ! has_entry_uuid || ! has_entry_enc )); }; then
-        return 1
-    fi
-
-    parsed_transport_uuid="$t_uuid"
-    parsed_landing_ip="$l_ip"
-    parsed_landing_port="$l_port"
-    parsed_encryption="${p_enc%%=*}"
-    return 0
+    [[ -n "$parsed_landing_port$parsed_entry_port" ]]
 }
 
 # ─── relay generation helpers ────────────────────────────
@@ -1070,7 +978,7 @@ relay_create_landing_inbound() {
     local json_content
     json_content=$(jq -n         --arg tuuid "$transport_uuid"         --arg dec "$decryption"         --argjson port "$port"         --argjson elport "$entry_listen_port"         --arg euuid "$entry_uuid"         --arg edec "$entry_decryption" '
         {
-          inbounds: (
+          inbounds: ((
             [
               {
                 tag: "relay-in",
@@ -1097,7 +1005,7 @@ relay_create_landing_inbound() {
                   routeOnly: true
                 }
               }
-            ] +
+            ] | if $port == 0 then [] else . end) +
             (
               if ($elport >= 1 and $elport <= 65535 and ($euuid | length > 0) and ($edec | length > 0)) then
                 [
@@ -1533,15 +1441,17 @@ relay_view_info_landing() {
     fi
 
     if [[ -z "$landing_pub_ip" ]]; then
-        _fail "未能获取到落地机公网地址，无法生成中继链接。"
+        _fail "未能获取到落地机公网地址，无法生成中继配置。"
         echo
         return 1
     fi
 
-    local relay_link=$(relay_build_link "$tuuid" "$landing_pub_ip" "$ext_port" "$enc" "$eext_port" "$euuid" "$eenc")
-    _step "中继导入链接:"
+    local relay_profile
+    [[ $(jq -r '.relay_enabled' "$is_relay_state_file") != false ]] || ext_port=0
+    relay_profile=$(relay_build_profile "$tuuid" "$landing_pub_ip" "$ext_port" "$enc" "$eext_port" "$euuid" "$eenc" "$(jq -r '.entry_address // empty' "$is_relay_state_file")")
+    _step "中继导入配置:"
     echo
-    _green "$relay_link"
+    _green "$relay_profile"
     echo
 }
 
@@ -1754,14 +1664,15 @@ relay_menu() {
         _line
 
         local role=$(relay_get_role)
-        if [[ -z "$role" ]]; then
+        if [[ -z "$role" || "$role" == none ]]; then
             echo -e "  ${cyan}中继状态:${none} ${gray}未配置${none}"
             echo
             _section "操作"
             _menu 1 "将本机配置为线路机"
             _menu 2 "将本机配置为落地机"
+            _menu 3 "仅开启 NAT IPv4 公开入口"
             echo
-            echo -ne "  请选择 [${green}1-2${none}] [${red}0 返回主菜单${none}]: "
+            echo -ne "  请选择 [${green}1-3${none}] [${red}0 返回主菜单${none}]: "
             read -r REPLY || return 1
             [[ "$REPLY" == "0" ]] && return
             case $REPLY in
@@ -1771,6 +1682,10 @@ relay_menu() {
                 ;;
             2)
                 relay_setup_landing
+                pause
+                ;;
+            3)
+                relay_configure_landing_entry
                 pause
                 ;;
             esac
@@ -1859,7 +1774,7 @@ relay_menu() {
             fi
             echo
             _section "操作"
-            _menu 1 "查看 / 复制中继链接"
+            _menu 1 "查看 / 复制中继配置"
             _menu 2 "解除落地配置"
             _menu 3 "配置 / 切换 NAT v4 方案一过墙入口 (VLESS Encryption)"
             echo

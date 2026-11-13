@@ -21,7 +21,7 @@ export function NodeOrder({opened,onClose,onSaved}:{opened:boolean;onClose:()=>v
     catch(e){setError((e as Error).message);}finally{setBusy(false);}
   }
   return <Modal opened={opened} onClose={busy?()=>{}:onClose} title="所有节点排序" size="lg" closeOnClickOutside={!busy} closeOnEscape={!busy}><Stack>
-    <Text size="sm">上下移动节点并保存。节点列表、所有设备订阅及 VLESS 导出共用这个顺序；每台设备只包含其已授权、已发布的节点。无需部署 Xray 或更新 Agent。</Text>
+    <Text size="sm">上下移动节点并保存。节点列表、所有设备订阅及预览共用这个顺序；每台设备只包含其已授权、已发布的节点。无需部署 Xray 或更新 Agent。</Text>
     {error&&<Alert color="red">{error} 请关闭窗口后重新打开以载入最新列表。</Alert>}
     {!data&&!error&&<Loader size="sm"/>}
     {data&&!order.length&&<Alert color="cyan">暂无节点，请先添加节点。</Alert>}

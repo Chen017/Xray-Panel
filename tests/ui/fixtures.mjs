@@ -44,8 +44,9 @@ export const test = base.extend({
       const { node, agentToken } = primary.body;
       const agentHeaders = { 'Content-Type': 'application/json', 'X-Node-ID': node.id, Authorization: `Bearer ${agentToken}` };
       const bundle = fixtureBundle();
+      let firewall;
       const poll = () => fetch(`${system.urls[2]}/v1/agent/poll`, {
-        method: 'POST', headers: agentHeaders, body: JSON.stringify({ bundle, report: { installed: true, active: true } }),
+        method: 'POST', headers: agentHeaders, body: JSON.stringify({ bundle, report: { installed: true, active: true, firewall } }),
       });
       expect((await poll()).status).toBe(200);
       async function completeJob(action, output) {
@@ -59,7 +60,11 @@ export const test = base.extend({
         });
         expect(result.status).toBe(200);
       }
-      await use({ url, system, node, secondary: secondary.body.node, completeJob });
+      async function publishFirewall(report) {
+        firewall=report;
+        expect((await poll()).status).toBe(200);
+      }
+      await use({ url, system, node, secondary: secondary.body.node, completeJob, publishFirewall });
     } finally {
       await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
       await system.close();

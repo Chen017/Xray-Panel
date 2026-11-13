@@ -88,17 +88,45 @@ export const ruleSchema=z.object({type:z.literal('field'),domain:z.array(z.strin
 const optionalEntryPort=z.preprocess(v=>v===0||v===''?undefined:v,portSchema.optional());
 const optionalEntryUuid=z.preprocess(v=>v===''?undefined:v,z.guid().optional());
 const optionalEntryKey=z.preprocess(v=>v===''?undefined:v,z.string().min(10).max(2000).optional());
-const clearDisabledEntry = r => {if(r&&typeof r==='object'&&r.role==='landing'&&!r.entry_listen_port){r={...r};for(const key of ['entry_external_port','entry_uuid','entry_decryption','entry_encryption'])delete r[key];}return r;};
-export const landingSchema=z.object({id:z.string().regex(/^\d{1,6}$/),name:z.string().min(1).max(80),landing_ip:hostSchema,landing_port:portSchema,transport_uuid:z.guid(),encryption:z.string().min(10).max(2000).refine(s=>s.startsWith('mlkem768x25519plus.')||s.startsWith('mlkem768x25519.')||s.startsWith('chacha20poly1305.')),client_uuid:z.guid(),nodeId:z.guid().optional(),addressFamily:z.enum(['ipv4','ipv6']).optional(),entry_enabled:z.boolean().optional(),entry_address:hostSchema.optional(),entry_port:optionalEntryPort,entry_uuid:optionalEntryUuid,entry_encryption:optionalEntryKey}).superRefine((l,ctx)=>{if(l.entry_port&&(!l.entry_uuid||!l.entry_encryption))ctx.addIssue({code:'custom',path:['entry_port'],message:'公开入口需要独立 UUID 和加密参数，请导入落地机完整中继链接'});});
-export const relaySchema=z.preprocess(clearDisabledEntry,z.discriminatedUnion('role',[
-  z.object({role:z.literal('none')}),
-  z.object({role:z.literal('line'),landings:z.array(landingSchema).min(1).max(32),failover:z.object({enabled:z.boolean(),interval:z.string().regex(/^[1-9]\d{0,4}s$/),order:z.array(z.string())})}),
-  z.object({role:z.literal('landing'),transport_uuid:z.guid(),decryption:z.string().min(10).max(2000),encryption:z.string().min(10).max(2000),listen_port:portSchema,external_port:portSchema,landing_ip:hostSchema,peer_ip:z.string().refine(s=>s===''||isIP(s)===4,'来源白名单必须是 IPv4'),entry_listen_port:z.number().int().min(0).max(65535).optional(),entry_external_port:optionalEntryPort,entry_uuid:optionalEntryUuid,entry_decryption:optionalEntryKey,entry_encryption:optionalEntryKey})
-]).superRefine((r,ctx)=>{if(r.role==='landing'&&r.entry_listen_port>0){if(!r.entry_uuid||!r.entry_decryption||!r.entry_encryption)ctx.addIssue({code:'custom',path:['entry_listen_port'],message:'启用公开入口前请生成独立 UUID 与匹配的加密参数'});if(r.entry_listen_port===r.listen_port)ctx.addIssue({code:'custom',path:['entry_listen_port'],message:'公开入口与互联监听端口不能相同'});if((r.entry_external_port??r.entry_listen_port)===r.external_port)ctx.addIssue({code:'custom',path:['entry_external_port'],message:'公开入口与互联公网端口不能相同'});}}));
+function normalizeLanding(r) {
+  if(r?.role!=='landing')return r;
+  const landing={...r};
+  if(!landing.entry_listen_port)for(const key of ['entry_external_port','entry_uuid','entry_decryption','entry_encryption'])delete landing[key];
+  if(landing.relay_enabled===false)for(const key of ['transport_uuid','decryption','encryption','listen_port','external_port','peer_ip'])delete landing[key];
+  return landing;
+}
+export const landingSchema=z.object({id:z.string().regex(/^\d{1,6}$/),name:z.string().min(1).max(80),landing_ip:hostSchema,landing_port:portSchema,transport_uuid:z.guid(),encryption:z.string().min(10).max(2000).refine(s=>s.startsWith('mlkem768x25519plus.')||s.startsWith('mlkem768x25519.')||s.startsWith('chacha20poly1305.')),client_uuid:z.guid(),nodeId:z.guid().optional(),addressFamily:z.enum(['ipv4','ipv6']).optional(),entry_enabled:z.boolean().optional(),entry_address:hostSchema.optional(),entry_port:optionalEntryPort,entry_uuid:optionalEntryUuid,entry_encryption:optionalEntryKey}).superRefine((l,ctx)=>{if(l.entry_port&&(!l.entry_uuid||!l.entry_encryption))ctx.addIssue({code:'custom',path:['entry_port'],message:'公开入口需要独立 UUID 和加密参数，请在高级页补齐'});});
+const natEntriesSchema=z.record(z.string().regex(/^(direct|\d{1,6})$/),z.object({
+  nodeId:z.guid(),address:hostSchema.optional(),port:portSchema.optional(),uuid:z.guid().optional(),encryption:optionalEntryKey
+}).nullable());
+export const relaySchema=z.preprocess(normalizeLanding,z.discriminatedUnion('role',[
+  z.object({role:z.literal('none'),nat_entries:natEntriesSchema.optional()}),
+  z.object({role:z.literal('line'),nat_entries:natEntriesSchema.optional(),landings:z.array(landingSchema).min(1).max(32),failover:z.object({enabled:z.boolean(),interval:z.string().regex(/^[1-9]\d{0,4}s$/),order:z.array(z.string())})}),
+  z.object({role:z.literal('landing'),relay_enabled:z.boolean().optional(),transport_uuid:z.guid().optional(),decryption:z.string().min(10).max(2000).optional(),encryption:z.string().min(10).max(2000).optional(),listen_port:portSchema.optional(),external_port:portSchema.optional(),landing_ip:hostSchema,peer_ip:z.string().refine(s=>s===''||isIP(s)===4,'来源白名单必须是 IPv4').optional(),entry_listen_port:z.number().int().min(0).max(65535).optional(),entry_external_port:optionalEntryPort,entry_uuid:optionalEntryUuid,entry_decryption:optionalEntryKey,entry_encryption:optionalEntryKey})
+]).superRefine((r,ctx)=>{
+  const issue=(key,message)=>ctx.addIssue({code:'custom',path:[key],message});
+  if(r.role==='landing'){
+    if(r.relay_enabled!==false) {
+      for(const key of ['transport_uuid','decryption','encryption','listen_port','external_port'])if(!r[key])issue(key,'启用互联前请填写端口和互联加密参数');
+    }else if(!r.entry_listen_port)issue('entry_listen_port','请启用公开 IPv4 入口或将节点设为独立节点');
+    if(r.entry_listen_port>0){
+      if(!r.entry_uuid||!r.entry_decryption||!r.entry_encryption)issue('entry_listen_port','启用公开入口前请生成独立 UUID 与匹配的加密参数');
+      if(r.relay_enabled!==false&&r.entry_listen_port===r.listen_port)issue('entry_listen_port','公开入口与互联监听端口不能相同');
+      if(r.relay_enabled!==false&&(r.entry_external_port??r.entry_listen_port)===r.external_port)issue('entry_external_port','公开入口与互联公网端口不能相同');
+    }
+  }else for(const route of Object.keys(r.nat_entries??{}))if(route!=='direct'&&!r.landings?.some(l=>l.id===route))issue('nat_entries','IPv4 接入配置引用了未知出口');
+}));
+export function natRouteEntry(relay,route) {
+  if(Object.hasOwn(relay?.nat_entries??{},route))return relay.nat_entries[route];
+  const landing=relay?.landings?.find(l=>l.id===route);
+  if(landing?.entry_enabled===false||!landing?.entry_port||!landing.entry_encryption)return null;
+  return {legacy:true,nodeId:landing.nodeId,address:landing.entry_address??landing.landing_ip,port:landing.entry_port,uuid:landing.entry_uuid,encryption:landing.entry_encryption};
+}
+const natModes=['split','single4','vision4'];
 export function patchRouting(bundle,{customRules,relay}={}) {
   const b=clone(bundle),f=b.files,m=f['config.json'];
   if(customRules!==undefined)f['custom_rules.json']=z.array(ruleSchema).max(500).parse(customRules);
-  if(relay!==undefined) {relay=relaySchema.parse(relay);if(relay.role==='none')delete f['relay.json'];else f['relay.json']={version:relay.role==='line'?2:1,...relay};}
+  if(relay!==undefined) {relay=relaySchema.parse(relay);if(relay.role==='none'&&!Object.keys(relay.nat_entries??{}).length)delete f['relay.json'];else f['relay.json']={version:relay.role==='line'?2:1,...relay};}
   m.routing??={rules:[]};m.routing.domainStrategy='IPOnDemand';
   const r=f['relay.json'],landings=r?.role==='line'?(r.landings??[]):[],fo=r?.failover??{enabled:false,interval:'60s',order:[]};
   if(new Set(landings.map(l=>l.id)).size!==landings.length)throw Error('落地 ID 重复');
@@ -125,7 +153,7 @@ export function patchRouting(bundle,{customRules,relay}={}) {
     for(const [index,l] of landings.entries())i.settings.clients.push({id:l.client_uuid,email:index===0?(vision?`relay-vision-${i.tag.endsWith('_v6')?'v6':'v4'}`:'relay-xhttp'):`relay-${l.id}-${vision?`vision-${i.tag.endsWith('_v6')?'v6':'v4'}`:'xhttp'}`,...(vision?{flow:'xtls-rprx-vision'}:{})});
   }
   if(r?.role==='landing') {
-    const inbounds=[{tag:'relay-in',listen:'0.0.0.0',port:r.listen_port,protocol:'vless',settings:{clients:[{id:r.transport_uuid,flow:'xtls-rprx-vision',email:'relay-transport'}],decryption:r.decryption},streamSettings:{network:'raw',security:'none'},sniffing:{enabled:true,destOverride:['http','tls','quic'],routeOnly:true}}];
+    const inbounds=r.relay_enabled===false?[]:[{tag:'relay-in',listen:'0.0.0.0',port:r.listen_port,protocol:'vless',settings:{clients:[{id:r.transport_uuid,flow:'xtls-rprx-vision',email:'relay-transport'}],decryption:r.decryption},streamSettings:{network:'raw',security:'none'},sniffing:{enabled:true,destOverride:['http','tls','quic'],routeOnly:true}}];
     if(r.entry_listen_port&&r.entry_listen_port>0&&r.entry_uuid&&r.entry_decryption) {
       inbounds.push({tag:'relay-entry-v4',listen:'0.0.0.0',port:r.entry_listen_port,protocol:'vless',settings:{clients:[{id:r.entry_uuid,email:'relay-entry-v4'}],decryption:r.entry_decryption},streamSettings:{network:'raw',security:'none'},sniffing:{enabled:true,destOverride:['http','tls','quic'],routeOnly:true}});
     }
@@ -142,10 +170,14 @@ export function natEntryClients(nodeId,nodes,devices,master){
   const clients=[];
   for(const source of nodes.filter(n=>n.enabled&&n.id!==nodeId)){
     const relay=(source.observed??source.applied)?.files?.['relay.json'];
-    if(relay?.role!=='line')continue;
-    for(const landing of (relay.landings??[]).filter(l=>l.nodeId===nodeId&&l.entry_enabled!==false&&l.entry_port>0))for(const d of devices.filter(d=>!d.revoked)){
+    for(const d of devices.filter(d=>!d.revoked)){
       const grant=d.grants.find(g=>g.nodeId===source.id);
-      if(grant?.routes.includes(landing.id)&&grant.modes.some(mode=>['split','single4','vision4'].includes(mode)))clients.push({id:deviceUuid(master,d,source.id,landing.id),email:`panel-relay-${source.id}-${d.id}-${landing.id}`});
+      if(!grant?.modes.some(mode=>natModes.includes(mode)))continue;
+      for(const route of grant.routes){
+        if(route!=='direct'&&!relay?.landings?.some(l=>l.id===route))continue;
+        const entry=natRouteEntry(relay,route);
+        if(entry?.nodeId===nodeId&&entry.port)clients.push({id:deviceUuid(master,d,source.id,route),email:`panel-relay-${source.id}-${d.id}-${route}`});
+      }
     }
   }
   return clients.sort((a,b)=>a.email.localeCompare(b.email));
@@ -204,7 +236,7 @@ function providerEntries(node,applied,device,master,sourceFile) {
       const key=subscriptionNameKey(node.id,'conf/99_relay_in.json','direct','vlessenc');
       const defaultName=`${node.subscriptionName||node.name} · NAT-v4-VLESS-Enc`,customName=node.subscriptionNames?.[key]??'';
       const p={name:customName||defaultName,type:'vless',server,port,uuid,network:'tcp',tls:false,udp:true,tfo:false,mptcp:true,'packet-encoding':'xudp',encryption:(r.entry_encryption||'').replace(/=+$/,'')};
-      return [{proxy:p,settings:{xhttp:{}},key,nodeId:node.id,file:'conf/99_relay_in.json',route:'direct',mode:'vlessenc',defaultName,customName}];
+      return [{proxy:p,key,nodeId:node.id,file:'conf/99_relay_in.json',route:'direct',mode:'vlessenc',defaultName,customName}];
     }
     return [];
   }
@@ -218,34 +250,35 @@ function providerEntries(node,applied,device,master,sourceFile) {
     const sni=f=>f==='4'?s.sni4:s.sni6,sid=f=>f==='4'?s.shortIds4[0]:(s.shortIds6[1]??s.shortIds6[0]);
     const transport=f=>({server:addr(f),port:s.port,tls:true,servername:sni(f),'client-fingerprint':f===family?'chrome':'firefox',alpn:['h2'],'reality-opts':{'public-key':s.publicKey,'short-id':sid(f)}});
     const landing=applied.files['relay.json']?.landings?.find(l=>l.id===route);
-    const hasNatV4=!!(landing?.entry_enabled!==false&&landing?.entry_port&&landing.entry_port>0&&landing.entry_encryption);
-    const entryTarget=hasNatV4&&landing.nodeId&&['split','single4','vision4'].includes(mode)?{nodeId:landing.nodeId,uuid}:null;
-    const file=sourceFile??regular[0][0],guardKey=subscriptionNameKey(node.id,file,route,'nat4-entry'),guardDefaultName=`${node.subscriptionName||node.name} · ${landing?.name??route} · NAT-v4-Entry`,guardCustomName=node.subscriptionNames?.[guardKey]??'',guardName=guardCustomName||guardDefaultName;
-    const guardProxy=hasNatV4?{name:guardName,type:'vless',server:landing.entry_address??landing.landing_ip,port:landing.entry_port,uuid:landing.nodeId?uuid:landing.entry_uuid||uuid,network:'tcp',tls:false,udp:true,tfo:false,mptcp:true,'packet-encoding':'xudp',encryption:(landing.entry_encryption||'').replace(/=+$/,'')}:null;
+    const entry=natRouteEntry(applied.files['relay.json'],route),usesNat=!!entry&&natModes.includes(mode);
+    if(usesNat&&(!entry.port||!entry.address||!entry.uuid||!entry.encryption))continue;
+    const entryTarget=usesNat&&entry.nodeId?{nodeId:entry.nodeId,uuid,entry}:null;
+    const file=sourceFile??regular[0][0],guardKey=subscriptionNameKey(node.id,file,route,'nat4-entry'),guardDefaultName=`${node.subscriptionName||node.name} · ${landing?.name??(route==='direct'?'直出':route)} · NAT-v4-Entry`,guardCustomName=node.subscriptionNames?.[guardKey]??'',guardName=guardCustomName||guardDefaultName;
+    const guardProxy=usesNat?{name:guardName,type:'vless',server:entry.address,port:entry.port,uuid:entry.nodeId?uuid:entry.uuid,network:'tcp',tls:false,udp:true,tfo:false,mptcp:true,'packet-encoding':'xudp',encryption:entry.encryption.replace(/=+$/,'')}:null;
     const key=subscriptionNameKey(node.id,file,route,mode),defaultName=`${node.subscriptionName||node.name} · ${route==='direct'?'直出':landing?.name??route} · ${mode}`,customName=node.subscriptionNames?.[key]??'';
 
-    if(hasNatV4&&mode==='vision4'){
+    if(usesNat&&entry.legacy&&mode==='vision4'){
       const p={...guardProxy,name:customName||defaultName};
-      result.push({proxy:p,settings:s,key,nodeId:node.id,file,route,mode,defaultName,customName,entryTarget});
+      result.push({proxy:p,key,nodeId:node.id,file,route,mode,defaultName,customName,entryTarget});
       continue;
     }
     const p={name:customName||defaultName,type:'vless',...transport(family),uuid,udp:true,tfo:true,mptcp:true,'packet-encoding':'xudp',encryption:'none'};
     if(mode.startsWith('vision')){p.network='tcp';p.flow='xtls-rprx-vision';}
     else {p.network='xhttp';p['xhttp-opts']={...mihomoXhttp(s.xhttp),host:s.xhttp.host||sni(family),path:s.path};if(split)p['xhttp-opts']['download-settings']={...transport(down),host:s.xhttp.host||sni(down),path:s.path,'reuse-settings':{'max-concurrency':'8-16','c-max-reuse-times':0,'h-max-request-times':'300-600','h-max-reusable-secs':'2400-3600','h-keep-alive-period':0}};}
-    if(hasNatV4){
+    if(usesNat){
       if(split){
         if(s.v6Uplink)p['xhttp-opts']['download-settings']['dialer-proxy']=guardName;
         else{p['dialer-proxy']=guardName;p['xhttp-opts']['download-settings']['dialer-proxy']='';}
       }
-      else if(mode==='single4')p['dialer-proxy']=guardName;
+      else p['dialer-proxy']=guardName;
       if((p['dialer-proxy']||p['xhttp-opts']?.['download-settings']?.['dialer-proxy'])&&!emittedGuards.has(guardName)){
         emittedGuards.add(guardName);
-        result.push({proxy:guardProxy,settings:s,key:guardKey,nodeId:node.id,file,route,mode:'nat4-entry',defaultName:guardDefaultName,customName:guardCustomName,entryTarget});
+        result.push({proxy:guardProxy,key:guardKey,nodeId:node.id,file,route,mode:'nat4-entry',defaultName:guardDefaultName,customName:guardCustomName,entryTarget});
       }
     }
     const window=device.downloadWindows?.[key];
     if(split&&Number.isInteger(window)&&window>0&&window<=H2_WINDOW_MAX)p['xhttp-opts']['download-settings']['h2-max-receive-buffer-per-stream']=window;
-    result.push({proxy:p,settings:s,key,nodeId:node.id,file,route,mode,defaultName,customName,entryTarget});
+    result.push({proxy:p,key,nodeId:node.id,file,route,mode,defaultName,customName,entryTarget});
   }
   return result;
 }
@@ -253,29 +286,21 @@ export function providerProxies(node,applied,device,master) {
   return providerEntries(node,applied,device,master).map(({proxy})=>proxy);
 }
 export function providerNameEntries(node,applied,device,master) {
-  return providerEntries(node,applied,device,master).map(({proxy,settings,entryTarget,...entry})=>({...entry,name:proxy.name}));
-}
-export function providerLinks(node,applied,device,master) {
-  return providerEntries(node,applied,device,master).map(({proxy,settings})=>vlessLink(proxy,settings));
+  return providerEntries(node,applied,device,master).map(({proxy,entryTarget,...entry})=>({...entry,name:proxy.name}));
 }
 function deviceProviderEntries(nodes,device,master) {
   if(device.revoked)return [];
-  const entries=new Map(nodes.filter(n=>n.enabled&&n.applied).map(n=>[n.id,new Set(n.applied.files?.['conf/99_relay_in.json']?.inbounds?.find(i=>i.tag==='relay-entry-v4')?.settings?.clients?.map(c=>c.id)??[])]));
-  return nodes.filter(n=>n.enabled&&n.applied).flatMap(n=>providerEntries(n,n.applied,device,master)).filter(({entryTarget})=>!entryTarget||entries.get(entryTarget.nodeId)?.has(entryTarget.uuid)).map((entry,defaultIndex)=>({...entry,defaultIndex}));
+  const targets=new Map(nodes.filter(n=>n.enabled&&n.applied).map(n=>[n.id,n.applied]));
+  const ready=({entryTarget})=>{
+    if(!entryTarget)return true;
+    const {nodeId,uuid,entry}=entryTarget,applied=targets.get(nodeId);
+    const inbound=applied?.files['conf/99_relay_in.json']?.inbounds?.find(i=>i.tag==='relay-entry-v4');
+    if(!inbound?.settings?.clients?.some(c=>c.id===uuid))return false;
+    if(entry.legacy)return true;
+    const config=applied.files['relay.json'];
+    return config?.entry_listen_port===inbound.port&&(config.entry_external_port??config.entry_listen_port)===entry.port&&config.entry_uuid===entry.uuid&&config.entry_encryption===entry.encryption;
+  };
+  return nodes.filter(n=>n.enabled&&n.applied).flatMap(n=>providerEntries(n,n.applied,device,master)).filter(ready).map((entry,defaultIndex)=>({...entry,defaultIndex}));
 }
 export function deviceProviderProxies(nodes,device,master){return deviceProviderEntries(nodes,device,master).map(({proxy})=>proxy);}
-export function deviceProviderLinks(nodes,device,master){return deviceProviderEntries(nodes,device,master).map(({proxy,settings})=>vlessLink(proxy,settings));}
-export function deviceProviderNameEntries(nodes,device,master){return deviceProviderEntries(nodes,device,master).map(({proxy,settings,entryTarget,...entry})=>({...entry,name:proxy.name}));}
-export function vlessLink(proxy,settings) {
-  const p=proxy;
-  if(p['dialer-proxy']||p['xhttp-opts']?.['download-settings']?.['dialer-proxy'])throw Error('NAT 串联节点无法用单条 VLESS 链接完整表示，请使用 Mihomo Provider 或完整 YAML 配置');
-  if(p.tls===false){
-    const q=new URLSearchParams({encryption:p.encryption||'none',security:'none',type:'tcp'});
-    if(p.flow)q.set('flow',p.flow);
-    return `vless://${p.uuid}@${p.server.includes(':')?`[${p.server}]`:p.server}:${p.port}?${q}#${encodeURIComponent(p.name)}`;
-  }
-  const q=new URLSearchParams({encryption:'none',security:'reality',sni:p.servername,fp:p['client-fingerprint'],pbk:p['reality-opts']['public-key'],sid:p['reality-opts']['short-id'],alpn:(p.alpn??['h2']).join(','),type:p.network==='xhttp'?'xhttp':'tcp'});
-  if(p.network==='tcp')q.set('flow','xtls-rprx-vision');
-  else {q.set('mode',p['xhttp-opts'].mode||'auto');q.set('path',p['xhttp-opts'].path);q.set('host',p['xhttp-opts'].host);const extra={...settings.xhttp,host:p['xhttp-opts'].host,path:p['xhttp-opts'].path};const d=p['xhttp-opts']['download-settings'];if(d)extra.downloadSettings={address:d.server,port:d.port,network:'xhttp',security:'reality',realitySettings:{fingerprint:d['client-fingerprint'],serverName:d.servername,publicKey:d['reality-opts']['public-key'],shortId:d['reality-opts']['short-id']},xhttpSettings:{...settings.xhttp,host:d.host,path:d.path}};q.set('extra',JSON.stringify(extra));}
-  return `vless://${p.uuid}@${p.server.includes(':')?`[${p.server}]`:p.server}:${p.port}?${q}#${encodeURIComponent(p.name)}`;
-}
+export function deviceProviderNameEntries(nodes,device,master){return deviceProviderEntries(nodes,device,master).map(({proxy,entryTarget,...entry})=>({...entry,name:proxy.name}));}

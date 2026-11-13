@@ -34,7 +34,6 @@ test('one node order governs the node table, two encrypted subscriptions, previe
       const d=f.devices[i],allowed=new Set(d.device.grants.map(g=>g.nodeId)),expected=order.filter(id=>allowed.has(id)).flatMap(id=>['single4','vision4'].map(mode=>`${f.nodes.find(n=>n.id===id).name} · 直出 · ${mode}`));
       const proxies=await f.subscription(i);assert.deepEqual(proxies.map(p=>p.name),expected);
       assert.deepEqual(YAML.parse((await f.s.call(`/devices/${d.device.id}/preview`)).body).proxies,proxies);
-      assert.deepEqual((await f.s.call(`/devices/${d.device.id}/links`)).body.split('\n').map(l=>decodeURIComponent(new URL(l).hash.slice(1))),expected);
       assert.equal((await f.s.call(`/devices/${d.device.id}/names`,'PUT',{revision:0,order:[]})).status,409);
     }
     assert.deepEqual(f.s.store.list('job'),beforeJobs);

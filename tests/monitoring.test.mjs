@@ -163,3 +163,26 @@ test('a failed or absent shared-script report cannot count as network failure',a
  await f.m.drain();assert.equal(f.sent.length,0);assert.equal(f.m.status().incidents.length,0);
  }finally{await f.s.close();}
 });
+
+test('SNI family fallback is capability-gated and toggling it preserves network evidence',async()=>{
+ const f=await fixture();try{
+  const node={...f.target,report:{monitorProtocol:4,sniFamilyFallback:true}};
+  f.s.store.put('node',node.id,node);
+  const before=f.m.plan(node);
+  const net=before.targets.find(t=>t.kind==='connectivity'),sni=before.targets.find(t=>t.kind==='sni');
+  assert.equal(sni.allowFamilyFallback,undefined);
+  f.m.accept(node,{planId:before.id,results:[{id:net.id,ok:true,domestic:true,global:true},{id:sni.id,ok:false,code:'dns_failed'}]});
+  const network=f.m.status().incidents.find(r=>r.id===net.id);
+  f.m.save({...cfg,sniFamilyFallback:true});
+  const after=f.m.plan(node),fallback=after.targets.find(t=>t.kind==='sni');
+  assert.notEqual(fallback.id,sni.id);
+  assert.equal(fallback.allowFamilyFallback,true);
+  f.m.accept(node,{planId:after.id,results:[{id:fallback.id,ok:true,code:'ok',resolvedFamily:fallback.family===4?6:4}]});
+  assert.equal(f.m.status().incidents.find(r=>r.id===fallback.id).resolvedFamily,fallback.family===4?6:4);
+  assert.deepEqual(f.m.status().incidents.find(r=>r.id===net.id),network);
+  f.s.store.put('node',node.id,{...f.s.store.get('node',node.id),report:{monitorProtocol:4}});
+  const old={...node,report:{monitorProtocol:4}},oldPlan=f.m.plan(old);
+  assert.ok(oldPlan.targets.filter(t=>t.kind==='sni').every(t=>!t.allowFamilyFallback));
+  assert.ok(f.m.status().sniUpgradeRequired.some(n=>n.id===node.id));
+ }finally{await f.s.close();}
+});

@@ -165,20 +165,46 @@ relay_apply_landing() {
             --argjson ext_port "$ext_port" --arg enc "$encryption" --arg lip "$landing_ip" --arg peer "$peer" \
             '{version:1,role:"landing",transport_uuid:$tuuid,decryption:$dec,listen_port:$port,external_port:$ext_port,encryption:$enc,landing_ip:$lip,peer_ip:$peer}') || return 1
     fi
+    if (( port == 0 )); then
+        if (( entry_listen_port == 0 )); then
+            relay_remove_landing_inbound && relay_delete_state && rebuild_main_config
+            return
+        fi
+        state=$(jq -c '.relay_enabled=false | del(.transport_uuid,.decryption,.encryption,.listen_port,.external_port,.peer_ip)' <<< "$state") || return 1
+    fi
+    local entry_address
+    entry_address=$(jq -r '.entry_address // empty' "$is_relay_state_file" 2>/dev/null) || true
+    if (( entry_listen_port > 0 )) && [[ -n "$entry_address" ]]; then
+        state=$(jq -c --arg addr "$entry_address" '.entry_address=$addr' <<< "$state") || return 1
+    fi
     relay_save_state "$state" || return 1
     if [[ -f "$is_config_json" ]] && { (( entry_listen_port > 0 )) || jq -e '.routing.rules[]? | select(.inboundTag == ["relay-entry-v4"])' "$is_config_json" &>/dev/null; }; then
         rebuild_main_config || return 1
     fi
 }
 
+relay_keep_nat_entries() {
+    local state="$1" entries
+    entries=$(jq -c '.nat_entries // {}' "$is_relay_state_file" 2>/dev/null) || entries='{}'
+    state=$(jq -c --argjson entries "$entries" '
+        (.landings // [] | map(.id) + ["direct"]) as $routes |
+        ($entries | with_entries(select(.key as $route | $routes | index($route)))) as $kept |
+        if ($kept|length)>0 then .nat_entries=$kept else . end' <<< "$state") || return 1
+    if [[ $(jq -r '.role' <<< "$state") == none && $(jq -r '.nat_entries|length' <<< "$state") == 0 ]]; then
+        relay_delete_state
+    else
+        relay_save_state "$state"
+    fi
+}
+
 relay_apply_line() {
-    local lip="$1" port="$2" tuuid="$3" enc="${4%%=*}" cuuid="$5" name="$6" entry_port="${7:-0}" entry_uuid="${8:-}" entry_enc="${9%%=*}"
+    local lip="$1" port="$2" tuuid="$3" enc="${4%%=*}" cuuid="$5" name="$6" entry_port="${7:-0}" entry_uuid="${8:-}" entry_enc="${9%%=*}" entry_address="${10:-}"
     [[ "$entry_port" =~ ^[0-9]+$ ]] && (( entry_port >= 1 && entry_port <= 65535 )) || entry_port=0
     if (( entry_port == 0 )); then
         entry_uuid=""
         entry_enc=""
     elif ! relay_validate_uuid "$entry_uuid" || ! relay_validate_vless_encryption "$entry_enc"; then
-        _fail "公开入口需要独立 UUID 和加密参数，请导入落地机完整中继链接"
+        _fail "公开入口需要独立 UUID 和加密参数，请导入落地机完整中继配置"
         return 1
     fi
     local landings='[]'
@@ -223,11 +249,14 @@ relay_apply_line() {
         (if ($landings[0].entry_port // 0) > 0 then {entry_port:$landings[0].entry_port} + (if ($landings[0].entry_uuid // "") != "" then {entry_uuid:$landings[0].entry_uuid} else {} end) + (if ($landings[0].entry_encryption // "") != "" then {entry_encryption:$landings[0].entry_encryption} else {} end) else {} end)
     ') || return 1
 
-    relay_save_state "$state" && relay_sync_client_identities && rebuild_main_config
+    if (( entry_port > 0 )) && [[ -n "$entry_address" ]]; then
+        state=$(jq -c --arg address "$entry_address" '.landings[-1].entry_address=$address' <<< "$state") || return 1
+    fi
+    relay_keep_nat_entries "$state" && relay_sync_client_identities && rebuild_main_config
 }
 
 relay_apply_line_entry_port() {
-    local target_id="$1" entry_port="${2:-0}" entry_uuid="${3:-}" entry_enc="${4%%=*}"
+    local target_id="$1" entry_port="${2:-0}" entry_uuid="${3:-}" entry_enc="${4%%=*}" entry_address="${5:-}"
     if [[ ! -f "$is_relay_state_file" ]] || [[ "$(relay_get_role)" != "line" ]]; then
         _fail "仅线路机支持设置落地机 NAT v4 方案一过墙参数"
         return 1
@@ -242,7 +271,7 @@ relay_apply_line_entry_port() {
     fi
     if (( entry_port > 0 )); then
         if [[ -z "$entry_uuid" || -z "$entry_enc" ]]; then
-            _fail "公开入口需要独立 UUID 和加密参数，请粘贴落地机导出的完整中继链接"
+            _fail "公开入口需要独立 UUID 和加密参数，请粘贴落地机导出的完整中继配置"
             return 1
         fi
         if ! relay_validate_uuid "$entry_uuid"; then
@@ -276,7 +305,10 @@ relay_apply_line_entry_port() {
         {version:2, role:"line", landings:$landings, landing_ip:$landings[0].landing_ip, landing_port:$landings[0].landing_port, transport_uuid:$landings[0].transport_uuid, encryption:$landings[0].encryption, client_uuid:$landings[0].client_uuid, failover:$fo} +
         (if ($landings[0].entry_port // 0) > 0 then {entry_port:$landings[0].entry_port} + (if ($landings[0].entry_uuid // "") != "" then {entry_uuid:$landings[0].entry_uuid} else {} end) + (if ($landings[0].entry_encryption // "") != "" then {entry_encryption:$landings[0].entry_encryption} else {} end) else {} end)
     ') || return 1
-    relay_save_state "$state"
+    if (( entry_port > 0 )) && [[ -n "$entry_address" ]]; then
+        state=$(jq -c --arg id "$target_id" --arg address "$entry_address" '(.landings[] | select(.id==$id) | .entry_address)=$address' <<< "$state") || return 1
+    fi
+    relay_keep_nat_entries "$state"
 }
 
 relay_apply_remove() {
@@ -294,7 +326,7 @@ relay_apply_remove() {
             fi
             local count=$(jq -r 'length' <<< "$remaining" 2>/dev/null || echo 0)
             if (( count == 0 )); then
-                relay_delete_state && relay_remove_client_identity && rebuild_main_config
+                relay_keep_nat_entries '{"version":1,"role":"none"}' && relay_remove_client_identity && rebuild_main_config
             else
                 local updated_failover
                 updated_failover=$(jq --argjson remaining "$remaining" '
@@ -307,7 +339,7 @@ relay_apply_remove() {
                     {version:2, role:"line", landings:$landings, landing_ip:$landings[0].landing_ip, landing_port:$landings[0].landing_port, transport_uuid:$landings[0].transport_uuid, encryption:$landings[0].encryption, client_uuid:$landings[0].client_uuid, failover:$fo} +
                     (if ($landings[0].entry_port // 0) > 0 then {entry_port:$landings[0].entry_port} + (if ($landings[0].entry_uuid // "") != "" then {entry_uuid:$landings[0].entry_uuid} else {} end) + (if ($landings[0].entry_encryption // "") != "" then {entry_encryption:$landings[0].entry_encryption} else {} end) else {} end)
                 ') || return 1
-                relay_save_state "$state" && relay_sync_client_identities && rebuild_main_config
+                relay_keep_nat_entries "$state" && relay_sync_client_identities && rebuild_main_config
             fi
             ;;
         landing)
@@ -413,35 +445,43 @@ relay_setup_landing() {
             _ok "NAT v4 方案一过墙已开启: 本机 TCP $entry_listen_port (公网: $entry_ext_port, 协议: VLESS Encryption random + 1-RTT Padding)"
         fi
         echo
-        _info "在线路机导入以下链接："
+        _info "在线路机导入以下配置："
         echo
-        _green "$(relay_build_link "$transport_uuid" "$landing_ip" "$ext_port" "$main_enc" "$entry_ext_port" "$entry_uuid" "$entry_enc")"
+        _green "$(relay_build_profile "$transport_uuid" "$landing_ip" "$ext_port" "$main_enc" "$entry_ext_port" "$entry_uuid" "$entry_enc")"
         echo
     fi
 }
 
 relay_configure_landing_entry() {
-    if [[ ! -f "$is_relay_state_file" ]] || [[ "$(relay_get_role)" != "landing" ]]; then
-        _fail "当前非落地机模式，无法配置 NAT v4 方案一过墙入口"
-        return 1
-    fi
     local tuuid dec port ext_port enc lip peer cur_elport cur_eext cur_euuid cur_edec cur_eenc
-    tuuid=$(jq -r '.transport_uuid // ""' "$is_relay_state_file")
-    dec=$(jq -r '.decryption // ""' "$is_relay_state_file")
-    port=$(jq -r '.listen_port // 0' "$is_relay_state_file")
-    ext_port=$(jq -r '.external_port // .listen_port // 0' "$is_relay_state_file")
-    enc=$(jq -r '.encryption // ""' "$is_relay_state_file")
-    lip=$(jq -r '.landing_ip // ""' "$is_relay_state_file")
-    peer=$(jq -r '.peer_ip // ""' "$is_relay_state_file")
-    cur_elport=$(jq -r '.entry_listen_port // 0' "$is_relay_state_file")
-    cur_eext=$(jq -r '.entry_external_port // .entry_listen_port // 0' "$is_relay_state_file")
-    cur_euuid=$(jq -r '.entry_uuid // ""' "$is_relay_state_file")
-    cur_edec=$(jq -r '.entry_decryption // ""' "$is_relay_state_file")
-    cur_eenc=$(jq -r '.entry_encryption // ""' "$is_relay_state_file")
+    tuuid=$(jq -r '.transport_uuid // ""' "$is_relay_state_file" 2>/dev/null || true)
+    dec=$(jq -r '.decryption // ""' "$is_relay_state_file" 2>/dev/null || true)
+    port=$(jq -r '.listen_port // 0' "$is_relay_state_file" 2>/dev/null || true)
+    ext_port=$(jq -r '.external_port // .listen_port // 0' "$is_relay_state_file" 2>/dev/null || true)
+    enc=$(jq -r '.encryption // ""' "$is_relay_state_file" 2>/dev/null || true)
+    lip=$(jq -r '.landing_ip // ""' "$is_relay_state_file" 2>/dev/null || true)
+    peer=$(jq -r '.peer_ip // ""' "$is_relay_state_file" 2>/dev/null || true)
+    cur_elport=$(jq -r '.entry_listen_port // 0' "$is_relay_state_file" 2>/dev/null || true)
+    cur_eext=$(jq -r '.entry_external_port // .entry_listen_port // 0' "$is_relay_state_file" 2>/dev/null || true)
+    cur_euuid=$(jq -r '.entry_uuid // ""' "$is_relay_state_file" 2>/dev/null || true)
+    cur_edec=$(jq -r '.entry_decryption // ""' "$is_relay_state_file" 2>/dev/null || true)
+    cur_eenc=$(jq -r '.entry_encryption // ""' "$is_relay_state_file" 2>/dev/null || true)
+
+    local role
+    role=$(relay_get_role)
+    [[ -z "$role" || "$role" == none || "$role" == landing ]] || { _fail "请先解除线路机角色"; return 1; }
+    if [[ "$role" != landing || $(jq -r '.relay_enabled' "$is_relay_state_file" 2>/dev/null) == false ]]; then
+        tuuid=""; dec=""; port=0; ext_port=0; enc=""; peer=""
+    fi
+    if [[ -z "$lip" ]]; then
+        get_ip &>/dev/null || true
+        prompt_input "NAT 公开 IPv4 地址或域名" lip "${ip:-}"
+        relay_validate_host "$lip" || { _fail "无效的 IPv4 地址或域名"; return 1; }
+    fi
+    cur_elport=${cur_elport:-0}; cur_eext=${cur_eext:-0}
 
     echo
     _section "NAT v4 方案一过墙入口设置 (VLESS Encryption)"
-    _info "香港线路机与本 NAT 机器之间保持原有的 VLESS Encryption 互联方式不变；"
     _info "客户端通过 NAT v4 高位端口过墙时，采用方案一 (VLESS + VLESS Encryption"
     _info "random 全随机流 + 100-111-1111.75-0-111.50-0-3333 握手填充)，彻底消除高位端口假 TLS 特征。"
     echo
@@ -496,9 +536,9 @@ relay_configure_landing_entry() {
     if config_transaction relay_apply_landing "$tuuid" "$dec" "$port" "$enc" "$lip" "$peer" "$ext_port" "$new_elport" "$new_eext" "$new_euuid" "$new_edec" "$new_eenc"; then
         _ok "已启用 NAT v4 方案一过墙入口: 本机 TCP $new_elport (公网: $new_eext)"
         echo
-        _info "可在线路机 [4. 线路 / 落地互联 → 6. 设置落地机 NAT v4 方案一过墙] 粘贴下方完整中继链接进行同步："
+        _info "在线路机选择 IPv4 接入时粘贴以下配置："
         echo
-        _green "$(relay_build_link "$tuuid" "$lip" "$ext_port" "$enc" "$new_eext" "$new_euuid" "$new_eenc")"
+        _green "$(relay_build_profile "$tuuid" "$lip" "$ext_port" "$enc" "$new_eext" "$new_euuid" "$new_eenc")"
         echo
     fi
 }
@@ -551,29 +591,29 @@ relay_menu_entry_port() {
     cur_euuid=$(jq -r ".[$sel_idx].entry_uuid // \"\"" <<< "$landings")
     cur_eenc=$(jq -r ".[$sel_idx].entry_encryption // \"\"" <<< "$landings")
 
-    _info "支持直接粘贴落地机生成的最新中继链接 (vless://...#Xray-Relay) 自动同步方案一过墙参数，"
+    _info "支持直接粘贴落地机生成的最新中继配置 （JSON） 自动同步方案一过墙参数，"
     _info "或输入端口 (输入 0 关闭 NAT v4 方案一过墙，恢复本机 v4)。"
     echo
-    prompt_input "请粘贴落地机中继链接或输入过墙端口 [输入 0 关闭]" input_val "$cur_eport"
+    prompt_input "请粘贴落地机中继配置或输入过墙端口 [输入 0 关闭]" input_val "$cur_eport"
     [[ -n "$input_val" ]] || return 0
     if [[ "$input_val" == "0" ]]; then
         if config_transaction relay_apply_line_entry_port "$sel_id" 0 "" ""; then
             _ok "已关闭 [${sel_name}] 的 NAT v4 方案一过墙，恢复使用本机 v4"
         fi
         return 0
-    elif [[ "$input_val" == vless://* ]]; then
-        if ! relay_parse_link "$input_val" || [[ -z "$parsed_entry_port" || "$parsed_entry_port" == "0" ]]; then
-            _fail "所粘贴的中继链接未包含有效的 NAT v4 方案一过墙端口 (entry_port)"
+    elif [[ "$input_val" == \{* ]]; then
+        if ! relay_parse_profile "$input_val" || [[ -z "$parsed_entry_port" || "$parsed_entry_port" == "0" ]]; then
+            _fail "所粘贴的中继配置未包含有效的 NAT v4 方案一过墙端口 (entry_port)"
             return 1
         fi
-        if config_transaction relay_apply_line_entry_port "$sel_id" "$parsed_entry_port" "$parsed_entry_uuid" "$parsed_entry_encryption"; then
+        if config_transaction relay_apply_line_entry_port "$sel_id" "$parsed_entry_port" "$parsed_entry_uuid" "$parsed_entry_encryption" "$parsed_entry_address"; then
             _ok "已同步 [${sel_name}] NAT v4 方案一过墙 (${sel_ip}:${parsed_entry_port})"
         fi
         return 0
     elif relay_validate_port "$input_val"; then
         local new_eport="$input_val" new_euuid="$cur_euuid" new_eenc="$cur_eenc"
         if [[ -z "$new_euuid" || -z "$new_eenc" ]]; then
-            _fail "尚未导入公开入口密钥，不能复用互联密钥；请粘贴落地机完整中继链接"
+            _fail "尚未导入公开入口密钥，不能复用互联密钥；请粘贴落地机完整中继配置"
             return 1
         fi
         if config_transaction relay_apply_line_entry_port "$sel_id" "$new_eport" "$new_euuid" "$new_eenc"; then
@@ -582,7 +622,7 @@ relay_menu_entry_port() {
         fi
         return 0
     else
-        _fail "无效的输入，请粘贴包含 entry_port 的中继链接、有效端口号或 0"
+        _fail "无效的输入，请粘贴包含 entry_port 的中继配置、有效端口号或 0"
         return 1
     fi
 }
@@ -593,10 +633,10 @@ relay_setup_line() {
     _section "配置线路机绑定落地机"
     relay_generate_vlessenc || { _fail "内核不支持所需的 VLESS Encryption，请先更新"; return 1; }
     echo
-    echo -e "  ${cyan}请输入在落地机上生成的中继链接 (vless://...):${none}"
-    prompt_input "中继链接" input
+    echo -e "  ${cyan}请输入在落地机上生成的中继配置（JSON）:${none}"
+    prompt_input "中继配置" input
     [[ $input != 0 ]] || return
-    relay_parse_link "$input" || { _fail "链接需要合法公网 IP 或域名、VLESS 加密及 RAW/Vision 参数"; return 1; }
+    relay_parse_profile "$input" && [[ -n "$parsed_landing_port" ]] || { _fail "需要包含有效互联参数的 JSON 配置"; return 1; }
 
     local landings=$(relay_get_landings)
     local dup=$(jq -r --arg lip "$parsed_landing_ip" --argjson lport "$parsed_landing_port" \
@@ -615,7 +655,7 @@ relay_setup_line() {
     fi
 
     get_uuid
-    if config_transaction relay_apply_line "$parsed_landing_ip" "$parsed_landing_port" "$parsed_transport_uuid" "$parsed_encryption" "$tmp_uuid" "$landing_name" "${parsed_entry_port:-0}" "${parsed_entry_uuid:-}" "${parsed_entry_encryption:-}"; then
+    if config_transaction relay_apply_line "$parsed_landing_ip" "$parsed_landing_port" "$parsed_transport_uuid" "$parsed_encryption" "$tmp_uuid" "$landing_name" "${parsed_entry_port:-0}" "${parsed_entry_uuid:-}" "${parsed_entry_encryption:-}" "${parsed_entry_address:-}"; then
         _ok "成功绑定落地机 [${landing_name}] (${parsed_landing_ip}:${parsed_landing_port})"
         if [[ -n "$parsed_entry_port" && "$parsed_entry_port" != "0" ]]; then
             _ok "已同步 NAT v4 方案一过墙入口: ${parsed_landing_ip}:${parsed_entry_port}"

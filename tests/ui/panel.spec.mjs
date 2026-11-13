@@ -117,3 +117,36 @@ test('routing rule choices, editing, ordering and persisted preview', async ({ p
   await expect(rules.getByText(`DOMAIN-SUFFIX · ${longDomain}`)).toBeHidden();
   await expectNoOverflow(editor);
 });
+
+test('firewall snapshot tables stay collapsed during phone scrolling', async ({page,panel,press,isMobile,browserName})=>{
+  test.skip(!isMobile,'Phone scrolling');
+  await panel.publishFirewall({status:'ok',sources:[{backend:'iptables',status:'ok',rules:Array.from({length:80},(_,i)=>({family:4,chain:'INPUT',protocol:'tcp',source:'any',ports:String(i+5000),action:'ACCEPT'}))}],automatic:[]});
+  await login(page,panel,press);
+  const editor=await openEditor(page,press);
+  await press(editor.getByRole('tab',{name:'运维'}));
+  const disclosure=editor.getByRole('button',{name:/iptables.*80/});
+  const copy=editor.getByRole('button',{name:'复制原始规则清单'});
+  await expect(copy).toBeHidden();
+  await disclosure.scrollIntoViewIfNeeded();
+  const scrollTop=()=>editor.evaluate(element=>element.scrollTop);
+  const start=await scrollTop();
+  const box=await disclosure.boundingBox();
+  if(browserName==='chromium'){
+    const cdp=await page.context().newCDPSession(page);
+    const x=Math.round(box.x+box.width/2),y=Math.round(box.y+box.height/2);
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x,y}]});
+    for(let i=1;i<=6;i++){
+      await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x,y:y-i*22}]});
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(resolve)));
+    }
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+  }else{
+    await editor.evaluate(element=>element.scrollBy(0,140));
+  }
+  await expect.poll(scrollTop).toBeGreaterThan(start+20);
+  await expect(copy).toBeHidden();
+  await disclosure.focus();
+  await disclosure.press('Enter');
+  await expect(disclosure).toHaveAttribute('aria-expanded','true');
+  await expect(copy).toBeVisible();
+});

@@ -3,6 +3,7 @@ import concurrent.futures,json,ipaddress,socket,ssl,subprocess,sys,time
 from pathlib import Path
 
 NETWORK_SCRIPT=Path(__file__).resolve().parent.parent/'vendor/xray-script/src/network_probe.sh'
+NO_FAMILY_RECORDS={getattr(socket,name) for name in ('EAI_NONAME','EAI_NODATA','EAI_ADDRFAMILY') if hasattr(socket,name)}
 
 def probe_overseas(connector=socket.create_connection):
     # Landing nodes only contact these overseas targets. Never invoke the shared
@@ -42,7 +43,15 @@ def probe_one(target,resolver=socket.getaddrinfo,connector=socket.create_connect
         if target.get('kind')=='overseas':return probe_overseas()
         host=target['host'];family=socket.AF_INET6 if target['family']==6 else socket.AF_INET
         if target['family'] not in (4,6) or target['kind'] not in ('tcp','sni') or not isinstance(target['port'],int) or not 1<=target['port']<=65535 or not isinstance(host,str) or len(host)>253 or any(c in host for c in '/\\@?#\r\n '):raise ValueError('target')
-        candidates=resolver(host,target['port'],family,socket.SOCK_STREAM)
+        used_family=target['family']
+        try:
+            candidates=resolver(host,target['port'],family,socket.SOCK_STREAM)
+        except socket.gaierror as exc:
+            if target['kind']!='sni' or target.get('allowFamilyFallback') is not True or exc.errno not in NO_FAMILY_RECORDS:raise
+            candidates=[]
+        if not candidates and target['kind']=='sni' and target.get('allowFamilyFallback') is True:
+            used_family=6 if used_family==4 else 4
+            candidates=resolver(host,target['port'],socket.AF_INET6 if used_family==6 else socket.AF_INET,socket.SOCK_STREAM)
         addresses=list(dict.fromkeys(item[4][0] for item in candidates))
         if not addresses or any(not public(ip) for ip in addresses):return {'ok':False if target['kind']=='sni' else None,'code':'non_public_or_empty_dns'}
         last=None
@@ -53,7 +62,9 @@ def probe_one(target,resolver=socket.getaddrinfo,connector=socket.create_connect
                         ctx=context_factory();ctx.minimum_version=ssl.TLSVersion.TLSv1_3;ctx.set_alpn_protocols(['h2'])
                         with ctx.wrap_socket(sock,server_hostname=host) as tls:
                             if tls.selected_alpn_protocol()!='h2':return {'ok':False,'code':'h2_not_negotiated'}
-                return {'ok':True,'code':'ok','latencyMs':round((time.monotonic()-start)*1000)}
+                result={'ok':True,'code':'ok','latencyMs':round((time.monotonic()-start)*1000)}
+                if used_family!=target['family']:result['resolvedFamily']=used_family
+                return result
             except ssl.SSLCertVerificationError:last='certificate_invalid'
             except ssl.SSLError:last='tls_failed'
             except (TimeoutError,socket.timeout):last='timeout'

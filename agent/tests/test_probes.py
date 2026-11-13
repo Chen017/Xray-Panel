@@ -47,6 +47,29 @@ class ProbeTests(unittest.TestCase):
   self.assertEqual(m.probe_one(self.target(),resolver=dns)['code'],'dns_failed')
   def timeout(*a,**k):raise TimeoutError()
   self.assertEqual(m.probe_one(self.target(),resolver=self.resolver,connector=timeout)['code'],'timeout')
+ def test_sni_family_fallback_is_opt_in_and_only_for_missing_records(self):
+  from contextlib import nullcontext
+  from types import SimpleNamespace
+  for original,alternate,address in [(socket.AF_INET,socket.AF_INET6,'2606:4700::1111'),(socket.AF_INET6,socket.AF_INET,'1.1.1.1')]:
+   family=4 if original==socket.AF_INET else 6
+   for error,enabled,expected in [(socket.EAI_NONAME,True,'ok'),(socket.EAI_NONAME,False,'dns_failed'),(socket.EAI_AGAIN,True,'dns_failed')]:
+    families=[]
+    def resolve(host,port,requested,*args):
+     families.append(requested)
+     if requested==original:raise socket.gaierror(error,'DNS')
+     return [(requested,1,6,'',(address,port))]
+    tls=SimpleNamespace(selected_alpn_protocol=lambda:'h2')
+    ctx=SimpleNamespace(set_alpn_protocols=lambda protocols:None,wrap_socket=lambda *args,**kw:nullcontext(tls))
+    target={**self.target(),'family':family,'allowFamilyFallback':enabled}
+    result=m.probe_one(target,resolver=resolve,connector=lambda *args,**kw:nullcontext(None),context_factory=lambda:ctx)
+    self.assertEqual(result['code'],expected)
+    self.assertEqual(families,[original,alternate] if expected=='ok' else [original])
+    if expected=='ok':
+     self.assertEqual(result['resolvedFamily'],6 if family==4 else 4)
+     tls.selected_alpn_protocol=lambda:'http/1.1'
+     failed=m.probe_one(target,resolver=resolve,connector=lambda *args,**kw:nullcontext(None),context_factory=lambda:ctx)
+     self.assertEqual(failed,{'ok':False,'code':'h2_not_negotiated'})
+
  def test_tls13_h2_real_handshake_and_certificate_validation(self):
   with tempfile.TemporaryDirectory(prefix='probe-tls-') as tmp:
    key,cert=Path(tmp)/'key.pem',Path(tmp)/'cert.pem'

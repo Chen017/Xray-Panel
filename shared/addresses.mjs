@@ -38,18 +38,18 @@ export function observeAddresses(node,network) {
   }
   return changed;
 }
-export function resolveLinkedAddresses(bundle,nodes) {
+export function resolveLinkedAddresses(bundle,nodes,{strictNat=false,sourceId}={}) {
   const b=clone(bundle),landings=b.files['relay.json']?.landings??[];
   for(const landing of landings) {
     if(!landing.nodeId)continue;
     const target=nodes.find(n=>n.id===landing.nodeId);
     if(!target)throw Error('关联落地已不存在，请重新选择或改用手动地址');
     const current=target.applied?.files['relay.json']??target.observed?.files['relay.json'];
-    if(current?.role!=='landing')throw Error('关联节点不是已配置的落地机');
+    if(current?.role!=='landing'||current.relay_enabled===false)throw Error('关联节点不是已配置的落地机');
     const address=effectiveAddress(target,landing.addressFamily??'ipv4');
     if(!address)throw Error('关联落地没有可用的公网地址，请设置手动覆盖或等待探测');
     landing.landing_ip=address;landing.landing_port=current.external_port??current.listen_port;
-    if(current.entry_listen_port&&current.entry_listen_port>0&&landing.entry_enabled!==false){
+    if(!Object.hasOwn(b.files['relay.json'].nat_entries??{},landing.id)&&current.entry_listen_port>0&&landing.entry_enabled!==false){
       landing.entry_address=effectiveAddress(target,'ipv4');
       if(!landing.entry_address||isIP(landing.entry_address)===6)throw Error('关联落地的公开 IPv4 入口缺少 IPv4 地址或域名，请设置地址后重试');
       landing.entry_port=current.entry_external_port??current.entry_listen_port;
@@ -70,9 +70,19 @@ export function resolveLinkedAddresses(bundle,nodes) {
       }
     }
   }
+  const entries=b.files['relay.json']?.nat_entries;
+  for(const [route,ref] of Object.entries(entries??{})){
+    if(!ref)continue;
+    const target=nodes.find(n=>n.id===ref.nodeId&&n.enabled&&n.id!==sourceId);
+    const current=target?.applied?.files['relay.json']??target?.observed?.files['relay.json'];
+    const address=target&&effectiveAddress(target,'ipv4');
+    const ready=current?.entry_listen_port>0&&current.entry_uuid&&current.entry_encryption&&address&&isIP(address)!==6;
+    if(!ready&&strictNat)throw Error('NAT IPv4 入口已移除或尚未就绪，请检查入口部署状态与公网 IPv4 地址');
+    entries[route]=ready?{nodeId:ref.nodeId,address,port:current.entry_external_port??current.entry_listen_port,uuid:current.entry_uuid,encryption:current.entry_encryption}:{nodeId:ref.nodeId};
+  }
   return b;
 }
 export function linkedTargetHash(node,nodes) {
   const base=node.observed??node.applied;
-  return base?hashBundle(resolveLinkedAddresses(base,nodes)):null;
+  return base?hashBundle(resolveLinkedAddresses(base,nodes,{sourceId:node.id})):null;
 }

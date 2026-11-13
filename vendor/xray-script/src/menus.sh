@@ -276,7 +276,7 @@ is_main_menu() {
                     export_landing_vlessenc
                     [[ $REPLY == "0" ]] && continue
                 else
-                    _info "当前为纯落地机模式，无普通客户端配置；请进入菜单 4 (线路 / 落地互联) 查看中继链接或开启 NAT v4 方案一过墙入口"
+                    _info "当前为纯落地机模式，无普通客户端配置；请进入菜单 4 (线路 / 落地互联) 查看中继配置或开启 NAT v4 方案一过墙入口"
                 fi
                 pause
                 continue

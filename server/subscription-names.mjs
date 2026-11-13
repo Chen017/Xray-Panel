@@ -1,4 +1,4 @@
-import {compileDevices,providerNameEntries,nodeFiles,subscriptionNameKey} from '../shared/config.mjs';
+import {compileDevices,providerNameEntries,nodeFiles,subscriptionNameKey,natRouteEntry} from '../shared/config.mjs';
 
 // The synthetic identity enumerates names only. It is never deployed or persisted.
 export function nodeNameEntries(node,master) {
@@ -12,7 +12,17 @@ export function assertUniqueNames(nodes,devices,master) {
   const catalogs=new Map(nodes.map(n=>[n.id,nodeNameEntries(n,master)]));
   for(const entries of catalogs.values())check(entries.map(e=>e.name));
   // Validate future grants too: a new device's UUID has not been deployed yet.
-  for(const device of devices.filter(d=>!d.revoked))check(nodes.filter(n=>n.enabled).flatMap(n=>{const g=device.grants.find(g=>g.nodeId===n.id);return g?catalogs.get(n.id).filter(e=>g.routes.includes(e.route)&&(g.modes.includes(e.mode)||e.mode==='nat4-entry'&&g.modes.some(m=>['split','single4'].includes(m)))).map(e=>e.name):[];}));
+  for(const device of devices.filter(d=>!d.revoked))check(nodes.filter(n=>n.enabled).flatMap(n=>{
+    const g=device.grants.find(g=>g.nodeId===n.id);
+    if(!g)return [];
+    const relay=(n.applied??n.draft)?.files['relay.json'];
+    return catalogs.get(n.id).filter(e=>{
+      if(!g.routes.includes(e.route))return false;
+      if(e.mode!=='nat4-entry')return g.modes.includes(e.mode);
+      const entry=natRouteEntry(relay,e.route);
+      return g.modes.includes('split')||g.modes.includes('single4')||(!entry?.legacy&&g.modes.includes('vision4'));
+    }).map(e=>e.name);
+  }));
 }
 export function migrateSubscriptionNames(store,master) {
   let migrated=false;
